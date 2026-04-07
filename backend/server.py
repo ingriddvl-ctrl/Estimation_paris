@@ -188,9 +188,10 @@ async def get_algorithm_config() -> AlgorithmConfig:
 @api_router.get("/address/search")
 async def search_address(q: str = Query(..., min_length=3)):
     async with httpx.AsyncClient(timeout=10) as client_http:
+        params = {"q": q + " Paris", "limit": 8}
         resp = await client_http.get(
             "https://api-adresse.data.gouv.fr/search/",
-            params={"q": q, "limit": 8, "type": "housenumber", "citycode": "75056"}
+            params=params
         )
         if resp.status_code == 200:
             data = resp.json()
@@ -217,32 +218,53 @@ async def search_dvf(
     lon: float = Query(...),
     radius: int = Query(default=500)
 ):
+    # Convert radius to approx bbox degrees (1 deg ≈ 111km)
+    delta = radius / 111000.0
+    bbox = f"{lon - delta},{lat - delta},{lon + delta},{lat + delta}"
     async with httpx.AsyncClient(timeout=15) as client_http:
         resp = await client_http.get(
-            "https://api.cquest.org/dvf",
+            "https://apidf-preprod.cerema.fr/dvf_opendata/geomutations/",
             params={
-                "lat": lat, "lon": lon,
-                "dist": radius
+                "in_bbox": bbox,
+                "page_size": 50,
+                "anneemut_min": 2020,
             }
         )
+        results = []
         if resp.status_code == 200:
             data = resp.json()
-            results = []
-            for r in data.get("resultats", [])[:50]:
-                if r.get("nature_mutation") == "Vente" and r.get("type_local") == "Appartement":
-                    results.append({
-                        "date": r.get("date_mutation", ""),
-                        "price": r.get("valeur_fonciere", 0),
-                        "surface": r.get("surface_reelle_bati", 0),
-                        "rooms": r.get("nombre_pieces_principales", 0),
-                        "address": f"{r.get('adresse_numero', '')} {r.get('adresse_nom_voie', '')}",
-                        "postal_code": r.get("code_postal", ""),
-                        "latitude": r.get("latitude", lat),
-                        "longitude": r.get("longitude", lon),
-                        "price_per_sqm": round(r.get("valeur_fonciere", 0) / max(r.get("surface_reelle_bati", 1), 1))
-                    })
-            return results
-        return []
+            for f in data.get("features", []):
+                p = f.get("properties", {})
+                geom = f.get("geometry", {})
+                coords = [0, 0]
+                # Extract centroid from polygon
+                if geom.get("type") == "MultiPolygon" and geom.get("coordinates"):
+                    ring = geom["coordinates"][0][0]
+                    coords = [sum(c[0] for c in ring)/len(ring), sum(c[1] for c in ring)/len(ring)]
+                elif geom.get("type") == "Polygon" and geom.get("coordinates"):
+                    ring = geom["coordinates"][0]
+                    coords = [sum(c[0] for c in ring)/len(ring), sum(c[1] for c in ring)/len(ring)]
+                
+                price = p.get("valeurfonc")
+                surface = p.get("sbati")
+                if price and surface and float(surface) > 9:
+                    price_f = float(price)
+                    surface_f = float(surface)
+                    if price_f > 0:
+                        results.append({
+                            "date": str(p.get("datemut", p.get("anneemut", ""))),
+                            "price": price_f,
+                            "surface": surface_f,
+                            "rooms": p.get("nbpiece", 0) or 0,
+                            "address": p.get("l_adresse", "") or f"Parcelle {p.get('l_idpar', '')}",
+                            "postal_code": str(p.get("l_codinsee", ""))[:5],
+                            "latitude": coords[1],
+                            "longitude": coords[0],
+                            "price_per_sqm": round(price_f / surface_f),
+                            "type": p.get("libtypbien", ""),
+                            "year": p.get("anneemut", ""),
+                        })
+        return results
 
 @api_router.get("/geo/risks")
 async def get_geo_risks(lat: float = Query(...), lon: float = Query(...)):
@@ -302,35 +324,57 @@ async def estimate_valuation(req: ValuationRequest):
     bldg = req.building
     legal = req.legal
 
-    # 1. Fetch DVF comparables
+    # 1. Fetch DVF comparables via Cerema API (with retry)
     comparables = []
     base_price_sqm = 10500.0  # Paris average fallback
     try:
-        async with httpx.AsyncClient(timeout=15) as client_http:
-            resp = await client_http.get(
-                "https://api.cquest.org/dvf",
-                params={"lat": loc.latitude, "lon": loc.longitude, "dist": 500}
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                for r in data.get("resultats", [])[:50]:
-                    if (r.get("nature_mutation") == "Vente" and
-                        r.get("type_local") == "Appartement" and
-                        r.get("surface_reelle_bati", 0) > 9):
-                        surface = r["surface_reelle_bati"]
-                        price = r.get("valeur_fonciere", 0)
-                        if price > 0:
-                            comparables.append({
-                                "date": r.get("date_mutation", ""),
-                                "price": price,
-                                "surface": surface,
-                                "rooms": r.get("nombre_pieces_principales", 0),
-                                "address": f"{r.get('adresse_numero', '')} {r.get('adresse_nom_voie', '')}".strip(),
-                                "postal_code": r.get("code_postal", ""),
-                                "latitude": r.get("latitude", loc.latitude),
-                                "longitude": r.get("longitude", loc.longitude),
-                                "price_per_sqm": round(price / surface)
-                            })
+        delta = 500 / 111000.0
+        bbox = f"{loc.longitude - delta},{loc.latitude - delta},{loc.longitude + delta},{loc.latitude + delta}"
+        import asyncio
+        for attempt in range(3):
+            try:
+                async with httpx.AsyncClient(timeout=15) as client_http:
+                    resp = await client_http.get(
+                        "https://apidf-preprod.cerema.fr/dvf_opendata/geomutations/",
+                        params={"in_bbox": bbox, "page_size": 50, "anneemut_min": 2020}
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        for f in data.get("features", []):
+                            p = f.get("properties", {})
+                            geom = f.get("geometry", {})
+                            coords = [loc.longitude, loc.latitude]
+                            if geom.get("type") == "Polygon" and geom.get("coordinates"):
+                                ring = geom["coordinates"][0]
+                                coords = [sum(c[0] for c in ring)/len(ring), sum(c[1] for c in ring)/len(ring)]
+                            elif geom.get("type") == "MultiPolygon" and geom.get("coordinates"):
+                                ring = geom["coordinates"][0][0]
+                                coords = [sum(c[0] for c in ring)/len(ring), sum(c[1] for c in ring)/len(ring)]
+                            price = p.get("valeurfonc")
+                            surface = p.get("sbati")
+                            if price and surface:
+                                price_f = float(price)
+                                surface_f = float(surface)
+                                if price_f > 10000 and surface_f > 9:
+                                    comparables.append({
+                                        "date": str(p.get("datemut", p.get("anneemut", ""))),
+                                        "price": price_f,
+                                        "surface": surface_f,
+                                        "rooms": p.get("nbpiece", 0) or 0,
+                                        "address": p.get("l_adresse", "") or f"Parcelle {p.get('l_idpar', '')}",
+                                        "postal_code": str(p.get("l_codinsee", ""))[:5],
+                                        "latitude": coords[1],
+                                        "longitude": coords[0],
+                                        "price_per_sqm": round(price_f / surface_f),
+                                    })
+                        break  # success
+                    elif resp.status_code == 503:
+                        await asyncio.sleep(1)
+                        continue
+                    else:
+                        break
+            except Exception:
+                await asyncio.sleep(1)
     except Exception as e:
         logger.warning(f"DVF API error: {e}")
 
@@ -348,7 +392,7 @@ async def estimate_valuation(req: ValuationRequest):
     total_flat_adjustment = 0.0
 
     # Floor
-    floor_adj, floor_label = compute_floor_adjustment(chars.floor if hasattr(chars, 'floor') else loc.floor, bldg.elevator, config)
+    floor_adj, floor_label = compute_floor_adjustment(loc.floor, bldg.elevator, config)
     if floor_adj != 0:
         adjustments.append({"name": "Étage", "value": floor_adj, "type": "pct", "detail": floor_label})
         total_pct_adjustment += floor_adj
