@@ -1,0 +1,623 @@
+import { useState, useCallback } from "react";
+import { useNavigate, Link } from "react-router-dom";
+import { toast } from "sonner";
+import { api } from "@/lib/api";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import { ArrowLeft, ArrowRight, MapPin, Home, Wrench, Building2, Scale, Loader2 } from "lucide-react";
+
+const STEPS = [
+  { id: 1, label: "Localisation", icon: MapPin },
+  { id: 2, label: "Bien", icon: Home },
+  { id: 3, label: "État", icon: Wrench },
+  { id: 4, label: "Immeuble", icon: Building2 },
+  { id: 5, label: "Juridique", icon: Scale },
+];
+
+const DEFAULT_FORM = {
+  location: { address: "", street_number: "", street_name: "", postal_code: "", city: "Paris", arrondissement: "", floor: 2, position: "sur_rue", latitude: 48.8566, longitude: 2.3522, iris_code: "" },
+  characteristics: { surface_carrez: 50, surface_habitable: 50, rooms: 2, bedrooms: 1, bathrooms: 1, property_type: "appartement", exposure: "sud", luminosity: "bon", view: "degagee", exterior_type: "aucun", exterior_surface: 0, ceiling_height: "2.50-2.80", parking: "aucun", cave: false, cave_surface: 0, annexes: [] },
+  condition: { general_state: "bon_etat", renovation_year: null, kitchen_quality: "equipee_basique", bathroom_quality: "standard", flooring: "parquet_massif", windows: "double_vitrage", insulation: "partielle", heating: "individuel_gaz", dpe: "D", ges: "D", asbestos: false, lead: false, electrical_compliance: true },
+  building: { construction_era: "haussmannien", building_type: "pierre_taille", total_floors: 6, total_lots: 20, elevator: true, concierge: false, security: "digicode", common_areas_state: "bon", facade_state: "correct", roof_state: "correct", annual_charges: 2400, ongoing_procedures: "aucune", syndic_type: "professionnel" },
+  legal: { ownership_type: "pleine_propriete", property_tax: 800, current_rent: 0, remaining_lease_months: 0, carrez_certified: true, servitudes: "", plu_zone: "" },
+};
+
+export default function NewValuation() {
+  const navigate = useNavigate();
+  const [step, setStep] = useState(1);
+  const [form, setForm] = useState(DEFAULT_FORM);
+  const [addressSuggestions, setAddressSuggestions] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [searchTimeout, setSearchTimeout] = useState(null);
+
+  const update = useCallback((section, field, value) => {
+    setForm(prev => ({ ...prev, [section]: { ...prev[section], [field]: value } }));
+  }, []);
+
+  const searchAddress = useCallback(async (query) => {
+    if (query.length < 3) { setAddressSuggestions([]); return; }
+    if (searchTimeout) clearTimeout(searchTimeout);
+    const t = setTimeout(async () => {
+      try {
+        const results = await api.searchAddress(query);
+        setAddressSuggestions(results);
+      } catch { setAddressSuggestions([]); }
+    }, 300);
+    setSearchTimeout(t);
+  }, [searchTimeout]);
+
+  const selectAddress = (addr) => {
+    setForm(prev => ({
+      ...prev,
+      location: {
+        ...prev.location,
+        address: addr.label,
+        street_number: addr.street_number,
+        street_name: addr.street_name,
+        postal_code: addr.postal_code,
+        city: addr.city,
+        latitude: addr.latitude,
+        longitude: addr.longitude,
+        arrondissement: addr.postal_code ? addr.postal_code.slice(-2) : "",
+      }
+    }));
+    setAddressSuggestions([]);
+  };
+
+  const handleSubmit = async () => {
+    if (!form.location.address || form.characteristics.surface_carrez <= 0) {
+      toast.error("Veuillez renseigner au minimum l'adresse et la surface.");
+      return;
+    }
+    setLoading(true);
+    try {
+      const result = await api.estimateValuation(form);
+      await api.saveValuation(result);
+      toast.success("Estimation calculée !");
+      navigate(`/results/${result.id}`);
+    } catch (err) {
+      toast.error("Erreur lors du calcul. Veuillez réessayer.");
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const canNext = () => {
+    if (step === 1) return form.location.address.length > 3;
+    if (step === 2) return form.characteristics.surface_carrez > 0;
+    return true;
+  };
+
+  return (
+    <div className="min-h-screen bg-white" data-testid="new-valuation-page">
+      {/* Header */}
+      <header className="border-b border-zinc-200 sticky top-0 bg-white/80 backdrop-blur-xl z-50">
+        <div className="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
+          <Link to="/" className="flex items-center gap-3 hover:opacity-70 transition-opacity" data-testid="nav-home">
+            <div className="w-8 h-8 bg-black flex items-center justify-center">
+              <span className="text-white font-heading font-bold text-sm">V</span>
+            </div>
+            <span className="font-heading font-bold text-lg tracking-tight">VALORISATEUR</span>
+          </Link>
+          <span className="text-xs font-mono text-zinc-400">ÉTAPE {step}/5</span>
+        </div>
+      </header>
+
+      {/* Step indicator */}
+      <div className="max-w-5xl mx-auto px-6 py-6">
+        <div className="flex items-center gap-2" data-testid="step-indicator">
+          {STEPS.map((s, i) => (
+            <div key={s.id} className="flex items-center gap-2">
+              <button
+                onClick={() => setStep(s.id)}
+                className={`flex items-center gap-2 px-3 py-1.5 text-xs font-medium transition-all ${
+                  step === s.id ? "bg-black text-white" : step > s.id ? "bg-zinc-800 text-white" : "bg-zinc-100 text-zinc-400"
+                }`}
+                data-testid={`step-btn-${s.id}`}
+              >
+                <s.icon className="w-3.5 h-3.5" strokeWidth={1.5} />
+                <span className="hidden sm:inline">{s.label}</span>
+              </button>
+              {i < STEPS.length - 1 && <div className="w-4 h-px bg-zinc-200" />}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Form */}
+      <div className="max-w-5xl mx-auto px-6 pb-24">
+        <div className="animate-slide-in" key={step}>
+          {step === 1 && <Step1 form={form} update={update} searchAddress={searchAddress} suggestions={addressSuggestions} selectAddress={selectAddress} />}
+          {step === 2 && <Step2 form={form} update={update} />}
+          {step === 3 && <Step3 form={form} update={update} />}
+          {step === 4 && <Step4 form={form} update={update} />}
+          {step === 5 && <Step5 form={form} update={update} />}
+        </div>
+
+        {/* Navigation */}
+        <div className="flex items-center justify-between mt-12 pt-6 border-t border-zinc-200">
+          <Button
+            variant="outline"
+            onClick={() => setStep(Math.max(1, step - 1))}
+            disabled={step === 1}
+            className="rounded-none h-11 px-6"
+            data-testid="prev-step-btn"
+          >
+            <ArrowLeft className="w-4 h-4 mr-2" /> Précédent
+          </Button>
+          {step < 5 ? (
+            <Button
+              onClick={() => setStep(Math.min(5, step + 1))}
+              disabled={!canNext()}
+              className="rounded-none h-11 px-6 bg-black text-white hover:bg-zinc-800"
+              data-testid="next-step-btn"
+            >
+              Suivant <ArrowRight className="w-4 h-4 ml-2" />
+            </Button>
+          ) : (
+            <Button
+              onClick={handleSubmit}
+              disabled={loading}
+              className="rounded-none h-11 px-8 bg-black text-white hover:bg-zinc-800"
+              data-testid="submit-valuation-btn"
+            >
+              {loading ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Calcul en cours...</> : "Estimer le bien"}
+            </Button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─── Step Components ─── */
+
+function FieldGroup({ label, children, overline }) {
+  return (
+    <div className="mb-6">
+      {overline && <p className="text-xs uppercase tracking-[0.2em] text-zinc-400 font-mono mb-4">{overline}</p>}
+      {label && <Label className="text-sm font-medium text-zinc-700 mb-2 block">{label}</Label>}
+      {children}
+    </div>
+  );
+}
+
+function Step1({ form, update, searchAddress, suggestions, selectAddress }) {
+  return (
+    <div data-testid="step-1-form">
+      <h2 className="font-heading font-bold text-2xl sm:text-3xl tracking-tight mb-2">Localisation exacte</h2>
+      <p className="text-sm text-zinc-500 mb-8">L'adresse détermine le prix de référence via les transactions DVF du quartier.</p>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        <div>
+          <FieldGroup label="Adresse complète" overline="Adresse">
+            <div className="relative">
+              <Input
+                value={form.location.address}
+                onChange={(e) => { update("location", "address", e.target.value); searchAddress(e.target.value); }}
+                placeholder="12 rue de Rivoli, 75004 Paris"
+                className="rounded-none h-11 border-zinc-300 focus:ring-black"
+                data-testid="address-input"
+              />
+              {suggestions.length > 0 && (
+                <div className="absolute top-full left-0 right-0 bg-white border border-zinc-200 z-50 max-h-48 overflow-y-auto" data-testid="address-suggestions">
+                  {suggestions.map((s, i) => (
+                    <button
+                      key={i}
+                      onClick={() => selectAddress(s)}
+                      className="w-full text-left px-4 py-2.5 text-sm hover:bg-zinc-50 border-b border-zinc-100 last:border-0 transition-colors"
+                      data-testid={`address-suggestion-${i}`}
+                    >
+                      {s.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </FieldGroup>
+          <div className="grid grid-cols-2 gap-4">
+            <FieldGroup label="Code postal">
+              <Input value={form.location.postal_code} onChange={(e) => update("location", "postal_code", e.target.value)} className="rounded-none h-11" data-testid="postal-code-input" />
+            </FieldGroup>
+            <FieldGroup label="Arrondissement">
+              <Input value={form.location.arrondissement} onChange={(e) => update("location", "arrondissement", e.target.value)} placeholder="e.g. 04" className="rounded-none h-11" data-testid="arrondissement-input" />
+            </FieldGroup>
+          </div>
+        </div>
+        <div>
+          <FieldGroup label="Étage du bien" overline="Position">
+            <Select value={String(form.location.floor)} onValueChange={(v) => update("location", "floor", parseInt(v))}>
+              <SelectTrigger className="rounded-none h-11" data-testid="floor-select"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="0">RDC</SelectItem>
+                {[1,2,3,4,5,6,7,8,9,10].map(f => <SelectItem key={f} value={String(f)}>{f === 1 ? "1er" : `${f}e`} étage</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </FieldGroup>
+          <FieldGroup label="Position dans l'immeuble">
+            <Select value={form.location.position} onValueChange={(v) => update("location", "position", v)}>
+              <SelectTrigger className="rounded-none h-11" data-testid="position-select"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="sur_rue">Sur rue</SelectItem>
+                <SelectItem value="sur_cour">Sur cour</SelectItem>
+                <SelectItem value="traversant">Traversant</SelectItem>
+                <SelectItem value="angle">Angle</SelectItem>
+              </SelectContent>
+            </Select>
+          </FieldGroup>
+          {form.location.latitude !== 0 && (
+            <div className="p-4 bg-zinc-50 border border-zinc-200 mt-4">
+              <p className="text-xs font-mono text-zinc-400">GPS : {form.location.latitude.toFixed(5)}, {form.location.longitude.toFixed(5)}</p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Step2({ form, update }) {
+  return (
+    <div data-testid="step-2-form">
+      <h2 className="font-heading font-bold text-2xl sm:text-3xl tracking-tight mb-2">Caractéristiques du bien</h2>
+      <p className="text-sm text-zinc-500 mb-8">Surface, pièces, exposition et extérieurs influencent directement la valorisation.</p>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        <FieldGroup label="Surface Carrez (m²)" overline="Surfaces">
+          <Input type="number" value={form.characteristics.surface_carrez} onChange={(e) => update("characteristics", "surface_carrez", parseFloat(e.target.value) || 0)} className="rounded-none h-11" data-testid="surface-input" />
+        </FieldGroup>
+        <FieldGroup label="Surface habitable (m²)">
+          <Input type="number" value={form.characteristics.surface_habitable} onChange={(e) => update("characteristics", "surface_habitable", parseFloat(e.target.value) || 0)} className="rounded-none h-11" data-testid="surface-hab-input" />
+        </FieldGroup>
+        <FieldGroup label="Nombre de pièces" overline="Distribution">
+          <Select value={String(form.characteristics.rooms)} onValueChange={(v) => update("characteristics", "rooms", parseInt(v))}>
+            <SelectTrigger className="rounded-none h-11" data-testid="rooms-select"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {[1,2,3,4,5,6,7].map(r => <SelectItem key={r} value={String(r)}>{r === 1 ? "Studio/T1" : `T${r}`}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </FieldGroup>
+        <FieldGroup label="Chambres">
+          <Input type="number" min="0" value={form.characteristics.bedrooms} onChange={(e) => update("characteristics", "bedrooms", parseInt(e.target.value) || 0)} className="rounded-none h-11" data-testid="bedrooms-input" />
+        </FieldGroup>
+        <FieldGroup label="Salles de bain">
+          <Input type="number" min="0" value={form.characteristics.bathrooms} onChange={(e) => update("characteristics", "bathrooms", parseInt(e.target.value) || 0)} className="rounded-none h-11" data-testid="bathrooms-input" />
+        </FieldGroup>
+        <FieldGroup label="Type de bien">
+          <Select value={form.characteristics.property_type} onValueChange={(v) => update("characteristics", "property_type", v)}>
+            <SelectTrigger className="rounded-none h-11" data-testid="type-select"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="appartement">Appartement classique</SelectItem>
+              <SelectItem value="loft">Loft</SelectItem>
+              <SelectItem value="duplex">Duplex</SelectItem>
+              <SelectItem value="triplex">Triplex</SelectItem>
+              <SelectItem value="souplex">Souplex</SelectItem>
+              <SelectItem value="chambre_service">Chambre de service</SelectItem>
+              <SelectItem value="penthouse">Dernier étage / Penthouse</SelectItem>
+            </SelectContent>
+          </Select>
+        </FieldGroup>
+        <FieldGroup label="Exposition" overline="Luminosité">
+          <Select value={form.characteristics.exposure} onValueChange={(v) => update("characteristics", "exposure", v)}>
+            <SelectTrigger className="rounded-none h-11" data-testid="exposure-select"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="nord">Nord</SelectItem>
+              <SelectItem value="sud">Sud</SelectItem>
+              <SelectItem value="est">Est</SelectItem>
+              <SelectItem value="ouest">Ouest</SelectItem>
+              <SelectItem value="multi">Multi-exposition</SelectItem>
+            </SelectContent>
+          </Select>
+        </FieldGroup>
+        <FieldGroup label="Vue">
+          <Select value={form.characteristics.view} onValueChange={(v) => update("characteristics", "view", v)}>
+            <SelectTrigger className="rounded-none h-11" data-testid="view-select"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="monument">Sur monument</SelectItem>
+              <SelectItem value="degagee">Dégagée / toits</SelectItem>
+              <SelectItem value="jardin">Sur jardin</SelectItem>
+              <SelectItem value="parc">Sur parc</SelectItem>
+              <SelectItem value="cour">Cour intérieure</SelectItem>
+              <SelectItem value="vis_a_vis_proche">Vis-à-vis proche (&lt;10m)</SelectItem>
+              <SelectItem value="vis_a_vis_lointain">Vis-à-vis lointain (&gt;10m)</SelectItem>
+            </SelectContent>
+          </Select>
+        </FieldGroup>
+        <FieldGroup label="Extérieur">
+          <Select value={form.characteristics.exterior_type} onValueChange={(v) => update("characteristics", "exterior_type", v)}>
+            <SelectTrigger className="rounded-none h-11" data-testid="exterior-select"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="aucun">Aucun</SelectItem>
+              <SelectItem value="balcon">Balcon</SelectItem>
+              <SelectItem value="terrasse">Terrasse</SelectItem>
+              <SelectItem value="loggia">Loggia</SelectItem>
+              <SelectItem value="jardin">Jardin privatif</SelectItem>
+            </SelectContent>
+          </Select>
+        </FieldGroup>
+        {form.characteristics.exterior_type !== "aucun" && (
+          <FieldGroup label="Surface extérieure (m²)">
+            <Input type="number" min="0" value={form.characteristics.exterior_surface} onChange={(e) => update("characteristics", "exterior_surface", parseFloat(e.target.value) || 0)} className="rounded-none h-11" data-testid="exterior-surface-input" />
+          </FieldGroup>
+        )}
+        <FieldGroup label="Hauteur sous plafond" overline="Volumes">
+          <Select value={form.characteristics.ceiling_height} onValueChange={(v) => update("characteristics", "ceiling_height", v)}>
+            <SelectTrigger className="rounded-none h-11" data-testid="ceiling-select"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="<2.50">&lt; 2,50m</SelectItem>
+              <SelectItem value="2.50-2.80">2,50 — 2,80m</SelectItem>
+              <SelectItem value="2.80-3.20">2,80 — 3,20m</SelectItem>
+              <SelectItem value=">3.20">&gt; 3,20m (haussmannien)</SelectItem>
+            </SelectContent>
+          </Select>
+        </FieldGroup>
+        <FieldGroup label="Parking">
+          <Select value={form.characteristics.parking} onValueChange={(v) => update("characteristics", "parking", v)}>
+            <SelectTrigger className="rounded-none h-11" data-testid="parking-select"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="aucun">Aucun</SelectItem>
+              <SelectItem value="sous_sol">Place en sous-sol</SelectItem>
+              <SelectItem value="box">Box fermé</SelectItem>
+            </SelectContent>
+          </Select>
+        </FieldGroup>
+        <FieldGroup label="Cave">
+          <div className="flex items-center gap-3 h-11">
+            <Switch checked={form.characteristics.cave} onCheckedChange={(v) => update("characteristics", "cave", v)} data-testid="cave-switch" />
+            <span className="text-sm text-zinc-600">{form.characteristics.cave ? "Oui" : "Non"}</span>
+          </div>
+        </FieldGroup>
+      </div>
+    </div>
+  );
+}
+
+function Step3({ form, update }) {
+  return (
+    <div data-testid="step-3-form">
+      <h2 className="font-heading font-bold text-2xl sm:text-3xl tracking-tight mb-2">État et qualité</h2>
+      <p className="text-sm text-zinc-500 mb-8">L'état du bien et le DPE ont un impact direct et mesurable sur la valorisation.</p>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        <FieldGroup label="État général" overline="Rénovation">
+          <Select value={form.condition.general_state} onValueChange={(v) => update("condition", "general_state", v)}>
+            <SelectTrigger className="rounded-none h-11" data-testid="state-select"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="a_renover">À rénover entièrement</SelectItem>
+              <SelectItem value="rafraichissement">Rafraîchissement</SelectItem>
+              <SelectItem value="bon_etat">Bon état</SelectItem>
+              <SelectItem value="refait_neuf">Refait à neuf</SelectItem>
+              <SelectItem value="luxe">Standing luxe</SelectItem>
+            </SelectContent>
+          </Select>
+        </FieldGroup>
+        <FieldGroup label="DPE" overline="Performance énergétique">
+          <Select value={form.condition.dpe} onValueChange={(v) => update("condition", "dpe", v)}>
+            <SelectTrigger className="rounded-none h-11" data-testid="dpe-select"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {["A","B","C","D","E","F","G"].map(c => <SelectItem key={c} value={c}>Classe {c}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </FieldGroup>
+        <FieldGroup label="GES">
+          <Select value={form.condition.ges} onValueChange={(v) => update("condition", "ges", v)}>
+            <SelectTrigger className="rounded-none h-11" data-testid="ges-select"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {["A","B","C","D","E","F","G"].map(c => <SelectItem key={c} value={c}>Classe {c}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </FieldGroup>
+        <FieldGroup label="Cuisine" overline="Équipements">
+          <Select value={form.condition.kitchen_quality} onValueChange={(v) => update("condition", "kitchen_quality", v)}>
+            <SelectTrigger className="rounded-none h-11" data-testid="kitchen-select"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="non_equipee">Non équipée</SelectItem>
+              <SelectItem value="equipee_basique">Équipée basique</SelectItem>
+              <SelectItem value="amenagee">Aménagée semi-ouverte</SelectItem>
+              <SelectItem value="haut_gamme">Ouverte haut de gamme</SelectItem>
+            </SelectContent>
+          </Select>
+        </FieldGroup>
+        <FieldGroup label="Salle de bain">
+          <Select value={form.condition.bathroom_quality} onValueChange={(v) => update("condition", "bathroom_quality", v)}>
+            <SelectTrigger className="rounded-none h-11" data-testid="bathroom-select"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="a_refaire">À refaire</SelectItem>
+              <SelectItem value="standard">Standard</SelectItem>
+              <SelectItem value="recent">Récent</SelectItem>
+              <SelectItem value="haut_gamme">Haut de gamme</SelectItem>
+            </SelectContent>
+          </Select>
+        </FieldGroup>
+        <FieldGroup label="Revêtement de sol">
+          <Select value={form.condition.flooring} onValueChange={(v) => update("condition", "flooring", v)}>
+            <SelectTrigger className="rounded-none h-11" data-testid="flooring-select"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="parquet_massif">Parquet massif</SelectItem>
+              <SelectItem value="parquet_contrecolle">Parquet contrecollé</SelectItem>
+              <SelectItem value="carrelage">Carrelage</SelectItem>
+              <SelectItem value="moquette">Moquette</SelectItem>
+              <SelectItem value="stratifie">Stratifié</SelectItem>
+              <SelectItem value="tomettes">Tomettes</SelectItem>
+              <SelectItem value="beton_cire">Béton ciré</SelectItem>
+            </SelectContent>
+          </Select>
+        </FieldGroup>
+        <FieldGroup label="Menuiseries" overline="Isolation">
+          <Select value={form.condition.windows} onValueChange={(v) => update("condition", "windows", v)}>
+            <SelectTrigger className="rounded-none h-11" data-testid="windows-select"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="simple_vitrage">Simple vitrage</SelectItem>
+              <SelectItem value="double_vitrage">Double vitrage</SelectItem>
+              <SelectItem value="double_renforce">Double vitrage renforcé</SelectItem>
+              <SelectItem value="triple_vitrage">Triple vitrage</SelectItem>
+            </SelectContent>
+          </Select>
+        </FieldGroup>
+        <FieldGroup label="Chauffage">
+          <Select value={form.condition.heating} onValueChange={(v) => update("condition", "heating", v)}>
+            <SelectTrigger className="rounded-none h-11" data-testid="heating-select"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="individuel_gaz">Individuel gaz</SelectItem>
+              <SelectItem value="individuel_elec">Individuel électrique</SelectItem>
+              <SelectItem value="collectif_gaz">Collectif gaz</SelectItem>
+              <SelectItem value="collectif_fioul">Collectif fioul</SelectItem>
+              <SelectItem value="pac">Pompe à chaleur</SelectItem>
+              <SelectItem value="sol">Chauffage au sol</SelectItem>
+            </SelectContent>
+          </Select>
+        </FieldGroup>
+        <FieldGroup label="Diagnostics" overline="Risques">
+          <div className="space-y-3">
+            <div className="flex items-center gap-3">
+              <Switch checked={form.condition.asbestos} onCheckedChange={(v) => update("condition", "asbestos", v)} data-testid="asbestos-switch" />
+              <span className="text-sm">Amiante</span>
+            </div>
+            <div className="flex items-center gap-3">
+              <Switch checked={form.condition.lead} onCheckedChange={(v) => update("condition", "lead", v)} data-testid="lead-switch" />
+              <span className="text-sm">Plomb</span>
+            </div>
+            <div className="flex items-center gap-3">
+              <Switch checked={form.condition.electrical_compliance} onCheckedChange={(v) => update("condition", "electrical_compliance", v)} data-testid="electrical-switch" />
+              <span className="text-sm">Conformité électrique</span>
+            </div>
+          </div>
+        </FieldGroup>
+      </div>
+    </div>
+  );
+}
+
+function Step4({ form, update }) {
+  return (
+    <div data-testid="step-4-form">
+      <h2 className="font-heading font-bold text-2xl sm:text-3xl tracking-tight mb-2">Caractéristiques de l'immeuble</h2>
+      <p className="text-sm text-zinc-500 mb-8">Type d'immeuble, ascenseur, gardien et charges impactent le prix au m².</p>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        <FieldGroup label="Époque de construction" overline="Immeuble">
+          <Select value={form.building.construction_era} onValueChange={(v) => update("building", "construction_era", v)}>
+            <SelectTrigger className="rounded-none h-11" data-testid="era-select"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="avant_1850">Avant 1850</SelectItem>
+              <SelectItem value="haussmannien">Haussmannien (1850–1914)</SelectItem>
+              <SelectItem value="entre_guerres">Entre-deux-guerres</SelectItem>
+              <SelectItem value="post_guerre">Post-guerre (1945–1970)</SelectItem>
+              <SelectItem value="70_80">Années 70–80</SelectItem>
+              <SelectItem value="90_2000">Années 90–2000</SelectItem>
+              <SelectItem value="neuf">Neuf / VEFA (2010+)</SelectItem>
+            </SelectContent>
+          </Select>
+        </FieldGroup>
+        <FieldGroup label="Type d'immeuble">
+          <Select value={form.building.building_type} onValueChange={(v) => update("building", "building_type", v)}>
+            <SelectTrigger className="rounded-none h-11" data-testid="building-type-select"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="pierre_taille">Pierre de taille haussmannien</SelectItem>
+              <SelectItem value="brique">Brique</SelectItem>
+              <SelectItem value="beton">Béton</SelectItem>
+              <SelectItem value="moderne">Immeuble moderne</SelectItem>
+              <SelectItem value="residence">Résidence sécurisée</SelectItem>
+              <SelectItem value="petit_immeuble">Petit immeuble (&lt;6 lots)</SelectItem>
+            </SelectContent>
+          </Select>
+        </FieldGroup>
+        <FieldGroup label="Nombre d'étages">
+          <Input type="number" min="1" max="20" value={form.building.total_floors} onChange={(e) => update("building", "total_floors", parseInt(e.target.value) || 1)} className="rounded-none h-11" data-testid="total-floors-input" />
+        </FieldGroup>
+        <FieldGroup label="Nombre de lots">
+          <Input type="number" min="1" value={form.building.total_lots} onChange={(e) => update("building", "total_lots", parseInt(e.target.value) || 1)} className="rounded-none h-11" data-testid="total-lots-input" />
+        </FieldGroup>
+        <FieldGroup label="Ascenseur" overline="Services">
+          <div className="flex items-center gap-3 h-11">
+            <Switch checked={form.building.elevator} onCheckedChange={(v) => update("building", "elevator", v)} data-testid="elevator-switch" />
+            <span className="text-sm text-zinc-600">{form.building.elevator ? "Oui" : "Non"}</span>
+          </div>
+        </FieldGroup>
+        <FieldGroup label="Gardien / Concierge">
+          <div className="flex items-center gap-3 h-11">
+            <Switch checked={form.building.concierge} onCheckedChange={(v) => update("building", "concierge", v)} data-testid="concierge-switch" />
+            <span className="text-sm text-zinc-600">{form.building.concierge ? "Oui" : "Non"}</span>
+          </div>
+        </FieldGroup>
+        <FieldGroup label="État des parties communes" overline="État">
+          <Select value={form.building.common_areas_state} onValueChange={(v) => update("building", "common_areas_state", v)}>
+            <SelectTrigger className="rounded-none h-11" data-testid="common-areas-select"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="mauvais">Mauvais</SelectItem>
+              <SelectItem value="correct">Correct</SelectItem>
+              <SelectItem value="bon">Bon</SelectItem>
+              <SelectItem value="excellent">Excellent</SelectItem>
+            </SelectContent>
+          </Select>
+        </FieldGroup>
+        <FieldGroup label="Charges annuelles (€)">
+          <Input type="number" min="0" value={form.building.annual_charges} onChange={(e) => update("building", "annual_charges", parseFloat(e.target.value) || 0)} className="rounded-none h-11" data-testid="charges-input" />
+        </FieldGroup>
+        <FieldGroup label="Syndic">
+          <Select value={form.building.syndic_type} onValueChange={(v) => update("building", "syndic_type", v)}>
+            <SelectTrigger className="rounded-none h-11" data-testid="syndic-select"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="professionnel">Professionnel</SelectItem>
+              <SelectItem value="benevole">Bénévole</SelectItem>
+              <SelectItem value="cooperatif">Coopératif</SelectItem>
+            </SelectContent>
+          </Select>
+        </FieldGroup>
+        <FieldGroup label="Procédures en cours">
+          <Select value={form.building.ongoing_procedures} onValueChange={(v) => update("building", "ongoing_procedures", v)}>
+            <SelectTrigger className="rounded-none h-11" data-testid="procedures-select"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="aucune">Aucune</SelectItem>
+              <SelectItem value="ravalement">Ravalement voté</SelectItem>
+              <SelectItem value="travaux_lourds">Travaux lourds votés</SelectItem>
+              <SelectItem value="judiciaire">Procédure judiciaire</SelectItem>
+            </SelectContent>
+          </Select>
+        </FieldGroup>
+      </div>
+    </div>
+  );
+}
+
+function Step5({ form, update }) {
+  return (
+    <div data-testid="step-5-form">
+      <h2 className="font-heading font-bold text-2xl sm:text-3xl tracking-tight mb-2">Données juridiques et fiscales</h2>
+      <p className="text-sm text-zinc-500 mb-8">Un bien vendu occupé ou en viager peut avoir une décote significative.</p>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        <FieldGroup label="Régime de propriété" overline="Propriété">
+          <Select value={form.legal.ownership_type} onValueChange={(v) => update("legal", "ownership_type", v)}>
+            <SelectTrigger className="rounded-none h-11" data-testid="ownership-select"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="pleine_propriete">Pleine propriété</SelectItem>
+              <SelectItem value="copropriete">Copropriété classique</SelectItem>
+              <SelectItem value="viager_occupe">Viager occupé</SelectItem>
+              <SelectItem value="viager_libre">Viager libre</SelectItem>
+              <SelectItem value="nue_propriete">Nue-propriété</SelectItem>
+              <SelectItem value="emphyteotique">Bail emphytéotique</SelectItem>
+            </SelectContent>
+          </Select>
+        </FieldGroup>
+        <FieldGroup label="Taxe foncière annuelle (€)" overline="Fiscalité">
+          <Input type="number" min="0" value={form.legal.property_tax} onChange={(e) => update("legal", "property_tax", parseFloat(e.target.value) || 0)} className="rounded-none h-11" data-testid="tax-input" />
+        </FieldGroup>
+        <FieldGroup label="Loyer actuel (€/mois)" overline="Location">
+          <Input type="number" min="0" value={form.legal.current_rent} onChange={(e) => update("legal", "current_rent", parseFloat(e.target.value) || 0)} className="rounded-none h-11" data-testid="rent-input" />
+        </FieldGroup>
+        <FieldGroup label="Mois de bail restants">
+          <Input type="number" min="0" value={form.legal.remaining_lease_months} onChange={(e) => update("legal", "remaining_lease_months", parseInt(e.target.value) || 0)} className="rounded-none h-11" data-testid="lease-input" />
+        </FieldGroup>
+        <FieldGroup label="Loi Carrez certifiée" overline="Certifications">
+          <div className="flex items-center gap-3 h-11">
+            <Switch checked={form.legal.carrez_certified} onCheckedChange={(v) => update("legal", "carrez_certified", v)} data-testid="carrez-switch" />
+            <span className="text-sm text-zinc-600">{form.legal.carrez_certified ? "Oui" : "Non"}</span>
+          </div>
+        </FieldGroup>
+        <FieldGroup label="Servitudes connues">
+          <Input value={form.legal.servitudes} onChange={(e) => update("legal", "servitudes", e.target.value)} placeholder="Vue, passage, etc." className="rounded-none h-11" data-testid="servitudes-input" />
+        </FieldGroup>
+      </div>
+    </div>
+  );
+}
