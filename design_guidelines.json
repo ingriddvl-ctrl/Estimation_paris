@@ -1,0 +1,92 @@
+{
+  "theme": "Light",
+  "archetype": "Archetype 4: Swiss & High-Contrast (Authority, Clarity, Truth)",
+  "rationale": "A real estate valuation tool connecting to public databases (DVF, INSEE) must convey absolute trust, precision, and authority. The Swiss High-Contrast archetype ensures the heavy data (waterfall charts, comparables, scores) remains highly legible and objective without feeling overwhelming. We avoid 'soft' or 'playful' aesthetics to maintain the professional, analytical nature of a tool outperforming PriceHubble.",
+  "colors": {
+    "background": "#FFFFFF",
+    "foreground": "#0A0A0A",
+    "primary": "#000000",
+    "primary_foreground": "#FFFFFF",
+    "secondary": "#F4F4F5",
+    "secondary_foreground": "#18181B",
+    "accent_signal_red": "#E60000",
+    "accent_signal_blue": "#0022EE",
+    "accent_signal_green": "#008A00",
+    "border": "#E4E4E7",
+    "muted": "#F4F4F5",
+    "muted_foreground": "#71717A",
+    "glass_strategy": "bg-white/80 backdrop-blur-xl border border-black/10"
+  },
+  "typography": {
+    "heading_font": "Cabinet Grotesk",
+    "body_font": "IBM Plex Sans",
+    "mono_font": "JetBrains Mono",
+    "rules": [
+      "DO NOT use Inter or standard Sans for headings.",
+      "Headlines > 32px must use tracking-tight.",
+      "Overlines/Labels (like 'SCORE DE LOCALISATION') MUST be Uppercase, text-xs, and wide spacing (tracking-[0.2em]).",
+      "Line height: leading-none for headers, leading-relaxed for body.",
+      "H1 Maximum size: text-4xl sm:text-5xl lg:text-6xl. No text-8xl+."
+    ]
+  },
+  "spacing_and_layout": {
+    "philosophy": "The 'Control Room' Grid",
+    "grid_mode": "Density, Data Correlation, Scanability",
+    "base_grid": "grid-cols-1 md:grid-cols-3 lg:grid-cols-4 lg:grid-cols-12",
+    "gap_strategy": "gap-4 or gap-6 for tight widget correlation.",
+    "rules": [
+      "Widgets must stretch (h-full) to align bottoms.",
+      "Containers with borders must use internal padding (p-6).",
+      "Avoid the 'Center-Everything Disease'. Keep data left-aligned.",
+      "Never fill 100% of the grid perfectly on marketing views; maintain strict structured density on the dashboard views."
+    ]
+  },
+  "components": {
+    "surface_strategy": "Grid Borders & The Technical Look",
+    "cards": "Flat background (bg-white), 1px subtle border (border-border), no rounded corners or max rounded-sm. Expose the skeleton.",
+    "interactive_elements": "Strictly defined hover states (e.g. hover:bg-zinc-100). Focus states must have high contrast (focus:ring-2 focus:ring-black).",
+    "forms": "Multi-step form should use Shadcn form components but strip away soft radii. Use sharp corners and high-contrast input borders.",
+    "charts": "Recharts for Waterfall Chart (price breakdown). Minimalist tooltips, mono-font numbers, stark color coding (Green for added value, Red for deductions).",
+    "map": "Comparables map should be housed in a border-collapse grid to feel integrated, not like a floating 'widget'. Use grayscale map tiles with high-contrast transaction markers."
+  },
+  "motion": {
+    "animations": [
+      "Staggered entrance for list items in the Location Score Dashboard.",
+      "Micro-interactions on hover (border color darkens, slight bg shifts).",
+      "Smooth slide transitions between multi-step form views."
+    ],
+    "rules": [
+      "Respect prefers-reduced-motion.",
+      "Use specific properties for transitions (transition: transform 0.2s ease, opacity 0.2s ease)."
+    ]
+  },
+  "assets_and_icons": {
+    "library": "lucide-react",
+    "rules": [
+      "Stroke width: 1.5px. Keep icons crisp and technical.",
+      "Use iconoir-react or lucide-react."
+    ]
+  },
+  "images": [
+    {
+      "url": "https://images.unsplash.com/photo-1768288985014-cc88f2e5004d?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMzl8MHwxfHNlYXJjaHwxfHxwYXJpcyUyMGhhdXNzbWFubiUyMGFwYXJ0bWVudCUyMGV4dGVyaW9yfGVufDB8fHx8MTc3NTU0ODczNnww&ixlib=rb-4.1.0&q=85",
+      "category": "hero",
+      "description": "Paris Haussmann building for the initial landing or multi-step form background. Must use overlay (bg-white/80 or bg-black/40) if placing text."
+    },
+    {
+      "url": "https://images.unsplash.com/photo-1491902381146-5ef4ab74101f?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzNDR8MHwxfHNlYXJjaHwxfHxwYXJpcyUyMGNpdHlzY2FwZSUyMG1pbmltYWx8ZW58MHx8fHwxNzc1NTQ4NzUwfDA&ixlib=rb-4.1.0&q=85",
+      "category": "background",
+      "description": "Minimalist Paris cityscape to be used as a subtle texture or empty state background."
+    }
+  ],
+  "instructions_to_main_agent": [
+    "Install and setup the fonts 'Cabinet Grotesk' (Headings) and 'IBM Plex Sans' (Body).",
+    "Implement the UI in .js (not .tsx). Make sure to configure Tailwind classes properly.",
+    "Build the multi-step form with Shadcn components but override styles to be sharp, cardless, and high-contrast.",
+    "Use 'Recharts' for the waterfall chart to decompose the price. It's a critical feature requested by the user.",
+    "For the 'Comparables Map', integrate an interactive map component (e.g., react-map-gl or a mocked equivalent) using a minimal grayscale tile style.",
+    "The Risk Analysis and Location Score dashboards must look highly technical. Use JetBrains Mono for metrics and scores.",
+    "All text should be in French as requested by the user.",
+    "All interactive and key informational elements MUST include a data-testid attribute in kebab-case."
+  ]
+}
