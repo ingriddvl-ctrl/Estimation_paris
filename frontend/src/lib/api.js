@@ -16,4 +16,15 @@ export const api = {
   getAlgorithmConfig: () => axios.get(`${API}/algorithm/config`).then(r => r.data),
   updateAlgorithmConfig: (data) => axios.put(`${API}/algorithm/config`, data).then(r => r.data),
   calculateSimulation: (data) => axios.post(`${API}/simulation/calculate`, data).then(r => r.data),
+  uploadDocument: (file, valuationId, category) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    return axios.post(`${API}/documents/upload?valuation_id=${valuationId || ""}&category=${category || "autre"}`, formData, {
+      headers: { "Content-Type": "multipart/form-data" }
+    }).then(r => r.data);
+  },
+  listDocuments: (valuationId) => axios.get(`${API}/documents/${valuationId}`).then(r => r.data),
+  downloadDocument: (fileId) => axios.get(`${API}/documents/download/${fileId}`, { responseType: "blob" }).then(r => r),
+  deleteDocument: (fileId) => axios.delete(`${API}/documents/${fileId}`).then(r => r.data),
+  getMarketListings: (lat, lon, radius = 800) => axios.get(`${API}/market/listings`, { params: { lat, lon, radius } }).then(r => r.data),
 };

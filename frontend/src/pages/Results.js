@@ -4,12 +4,16 @@ import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
-import { ArrowLeft, Calculator, Share2, Copy, MapPin, TrendingUp, Shield, BarChart3, Loader2, Lightbulb } from "lucide-react";
+import { ArrowLeft, Calculator, Share2, Copy, MapPin, TrendingUp, Shield, BarChart3, Loader2, Lightbulb, ShoppingBag, FileText, Brain } from "lucide-react";
 import WaterfallChart from "@/components/WaterfallChart";
 import ComparablesMap from "@/components/ComparablesMap";
 import LocationScores from "@/components/LocationScores";
 import RiskPanel from "@/components/RiskPanel";
 import HypothesesPanel from "@/components/HypothesesPanel";
+import MarketPosition from "@/components/MarketPosition";
+import MarketListings from "@/components/MarketListings";
+import DocumentUpload from "@/components/DocumentUpload";
+import ExpertInsights from "@/components/ExpertInsights";
 
 function formatPrice(n) {
   if (!n) return "—";
@@ -84,8 +88,8 @@ export default function Results() {
           </div>
         </div>
 
-        {/* Price summary */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-px bg-zinc-200 mb-8 animate-fade-in-up" data-testid="price-summary">
+        {/* Price summary + Market Position */}
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-px bg-zinc-200 mb-8 animate-fade-in-up" data-testid="price-summary">
           <div className="bg-white p-6">
             <p className="text-xs uppercase tracking-[0.2em] text-zinc-400 font-mono mb-2">Prix estimé</p>
             <p className="font-heading font-bold text-3xl tracking-tight" data-testid="price-median">{formatPrice(data.price_median)}</p>
@@ -108,30 +112,60 @@ export default function Results() {
             <p className="font-heading font-bold text-3xl tracking-tight" data-testid="comparables-count">{data.comparables?.length || 0}</p>
             <p className="text-xs text-zinc-400 mt-1 font-mono">transactions DVF proches</p>
           </div>
+          {data.market_data?.market_position && (
+            <div className="bg-white p-6">
+              <p className="text-xs uppercase tracking-[0.2em] text-zinc-400 font-mono mb-2">Position marché</p>
+              <p className="font-heading font-bold text-3xl tracking-tight" data-testid="market-position-badge" style={{
+                color: data.market_data.market_position.diff_pct > 5 ? "#008A00" : data.market_data.market_position.diff_pct < -5 ? "#E60000" : "#18181B"
+              }}>
+                {data.market_data.market_position.label}
+              </p>
+              <p className="text-xs text-zinc-400 mt-1 font-mono">
+                {data.market_data.market_position.diff_pct > 0 ? "+" : ""}{data.market_data.market_position.diff_pct}% vs arr.
+              </p>
+            </div>
+          )}
         </div>
 
         {/* Tabs */}
         <Tabs defaultValue="hypotheses" className="animate-fade-in-up stagger-2" data-testid="results-tabs">
-          <TabsList className="bg-zinc-100 rounded-none p-0 h-10">
-            <TabsTrigger value="hypotheses" className="rounded-none text-xs data-[state=active]:bg-black data-[state=active]:text-white h-10 px-5" data-testid="tab-hypotheses">
+          <TabsList className="bg-zinc-100 rounded-none p-0 h-10 flex-wrap">
+            <TabsTrigger value="hypotheses" className="rounded-none text-xs data-[state=active]:bg-black data-[state=active]:text-white h-10 px-4" data-testid="tab-hypotheses">
               <Lightbulb className="w-3.5 h-3.5 mr-1.5" /> Hypothèses
             </TabsTrigger>
-            <TabsTrigger value="estimation" className="rounded-none text-xs data-[state=active]:bg-black data-[state=active]:text-white h-10 px-5" data-testid="tab-estimation">
+            <TabsTrigger value="marche" className="rounded-none text-xs data-[state=active]:bg-black data-[state=active]:text-white h-10 px-4" data-testid="tab-marche">
+              <ShoppingBag className="w-3.5 h-3.5 mr-1.5" /> Marché
+            </TabsTrigger>
+            <TabsTrigger value="expert" className="rounded-none text-xs data-[state=active]:bg-black data-[state=active]:text-white h-10 px-4" data-testid="tab-expert">
+              <Brain className="w-3.5 h-3.5 mr-1.5" /> Expert
+            </TabsTrigger>
+            <TabsTrigger value="estimation" className="rounded-none text-xs data-[state=active]:bg-black data-[state=active]:text-white h-10 px-4" data-testid="tab-estimation">
               <BarChart3 className="w-3.5 h-3.5 mr-1.5" /> Estimation
             </TabsTrigger>
-            <TabsTrigger value="comparables" className="rounded-none text-xs data-[state=active]:bg-black data-[state=active]:text-white h-10 px-5" data-testid="tab-comparables">
+            <TabsTrigger value="comparables" className="rounded-none text-xs data-[state=active]:bg-black data-[state=active]:text-white h-10 px-4" data-testid="tab-comparables">
               <MapPin className="w-3.5 h-3.5 mr-1.5" /> Comparables
             </TabsTrigger>
-            <TabsTrigger value="localisation" className="rounded-none text-xs data-[state=active]:bg-black data-[state=active]:text-white h-10 px-5" data-testid="tab-localisation">
-              <TrendingUp className="w-3.5 h-3.5 mr-1.5" /> Localisation
-            </TabsTrigger>
-            <TabsTrigger value="risques" className="rounded-none text-xs data-[state=active]:bg-black data-[state=active]:text-white h-10 px-5" data-testid="tab-risques">
+            <TabsTrigger value="risques" className="rounded-none text-xs data-[state=active]:bg-black data-[state=active]:text-white h-10 px-4" data-testid="tab-risques">
               <Shield className="w-3.5 h-3.5 mr-1.5" /> Risques
+            </TabsTrigger>
+            <TabsTrigger value="documents" className="rounded-none text-xs data-[state=active]:bg-black data-[state=active]:text-white h-10 px-4" data-testid="tab-documents">
+              <FileText className="w-3.5 h-3.5 mr-1.5" /> Documents
             </TabsTrigger>
           </TabsList>
 
           <TabsContent value="hypotheses" className="mt-6" data-testid="tab-content-hypotheses">
             <HypothesesPanel adjustments={data.adjustments || []} marketData={data.market_data || {}} />
+          </TabsContent>
+
+          <TabsContent value="marche" className="mt-6" data-testid="tab-content-marche">
+            <MarketPosition position={data.market_data?.market_position} surface={chars.surface_carrez} totalPrice={data.price_median} />
+            <div className="mt-8">
+              <MarketListings lat={loc.latitude} lon={loc.longitude} estimatedPriceSqm={data.price_per_sqm_median} />
+            </div>
+          </TabsContent>
+
+          <TabsContent value="expert" className="mt-6" data-testid="tab-content-expert">
+            <ExpertInsights data={data} />
           </TabsContent>
 
           <TabsContent value="estimation" className="mt-6" data-testid="tab-content-estimation">
@@ -142,12 +176,12 @@ export default function Results() {
             <ComparablesMap comparables={data.comparables || []} center={[loc.latitude || 48.8566, loc.longitude || 2.3522]} estimatedPrice={data.price_per_sqm_median || 0} />
           </TabsContent>
 
-          <TabsContent value="localisation" className="mt-6" data-testid="tab-content-localisation">
-            <LocationScores scores={data.location_scores || {}} />
-          </TabsContent>
-
           <TabsContent value="risques" className="mt-6" data-testid="tab-content-risques">
             <RiskPanel risks={data.risks || []} dpe={data.request?.condition?.dpe} />
+          </TabsContent>
+
+          <TabsContent value="documents" className="mt-6" data-testid="tab-content-documents">
+            <DocumentUpload valuationId={id} />
           </TabsContent>
         </Tabs>
       </div>

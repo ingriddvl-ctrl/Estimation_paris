@@ -344,6 +344,101 @@ class ValuationAPITester:
             self.log_test("Shared Valuation", False, str(e))
         return False
 
+    def test_market_listings(self):
+        """Test market listings API"""
+        try:
+            response = requests.get(f"{self.api_url}/market/listings", 
+                                  params={"lat": 48.856, "lon": 2.352, "radius": 800}, 
+                                  timeout=15)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if isinstance(data, list):
+                    self.log_test("Market Listings API", True, f"Found {len(data)} market listings")
+                    return True
+                else:
+                    self.log_test("Market Listings API", False, "Invalid response format")
+            else:
+                self.log_test("Market Listings API", False, f"HTTP {response.status_code}")
+        except Exception as e:
+            self.log_test("Market Listings API", False, str(e))
+        return False
+
+    def test_document_upload(self):
+        """Test document upload functionality"""
+        try:
+            # Create a simple test file
+            test_content = b"Test document content for valuation"
+            files = {'file': ('test_document.txt', test_content, 'text/plain')}
+            
+            # Test upload
+            response = requests.post(f"{self.api_url}/documents/upload", 
+                                   files=files,
+                                   params={"valuation_id": "test-123", "category": "autre"},
+                                   timeout=30)
+            
+            if response.status_code == 200:
+                doc_data = response.json()
+                if "id" in doc_data and "storage_path" in doc_data:
+                    doc_id = doc_data["id"]
+                    self.log_test("Document Upload", True, f"Document uploaded with ID: {doc_id}")
+                    
+                    # Test list documents
+                    list_response = requests.get(f"{self.api_url}/documents/test-123", timeout=10)
+                    if list_response.status_code == 200:
+                        docs = list_response.json()
+                        self.log_test("Document List", True, f"Found {len(docs)} documents")
+                        
+                        # Test download
+                        download_response = requests.get(f"{self.api_url}/documents/download/{doc_id}", timeout=10)
+                        if download_response.status_code == 200:
+                            self.log_test("Document Download", True, "Document downloaded successfully")
+                            
+                            # Test delete
+                            delete_response = requests.delete(f"{self.api_url}/documents/{doc_id}", timeout=10)
+                            if delete_response.status_code == 200:
+                                self.log_test("Document Delete", True, "Document deleted successfully")
+                                return True
+                            else:
+                                self.log_test("Document Delete", False, f"HTTP {delete_response.status_code}")
+                        else:
+                            self.log_test("Document Download", False, f"HTTP {download_response.status_code}")
+                    else:
+                        self.log_test("Document List", False, f"HTTP {list_response.status_code}")
+                else:
+                    self.log_test("Document Upload", False, "Missing required fields in response")
+            else:
+                self.log_test("Document Upload", False, f"HTTP {response.status_code}")
+        except Exception as e:
+            self.log_test("Document Upload", False, str(e))
+        return False
+
+    def test_market_position_in_valuation(self, valuation_result):
+        """Test that valuation includes market position data"""
+        if not valuation_result:
+            self.log_test("Market Position in Valuation", False, "No valuation result to test")
+            return False
+        
+        try:
+            market_data = valuation_result.get("market_data", {})
+            market_position = market_data.get("market_position")
+            
+            if market_position:
+                required_fields = ["label", "description", "diff_pct", "arr_avg", "estimated_sqm"]
+                if all(field in market_position for field in required_fields):
+                    label = market_position["label"]
+                    diff_pct = market_position["diff_pct"]
+                    self.log_test("Market Position in Valuation", True, 
+                                f"Position: {label} ({diff_pct:+.1f}% vs arr.)")
+                    return True
+                else:
+                    self.log_test("Market Position in Valuation", False, "Missing required market position fields")
+            else:
+                self.log_test("Market Position in Valuation", False, "No market_position in market_data")
+        except Exception as e:
+            self.log_test("Market Position in Valuation", False, str(e))
+        return False
+
     def run_all_tests(self):
         """Run comprehensive backend API tests"""
         print("🏠 Testing Paris Apartment Valuation Backend APIs")
@@ -365,6 +460,11 @@ class ValuationAPITester:
 
         # Test simulation
         self.test_simulation_calculate()
+
+        # Test new features
+        self.test_market_listings()
+        self.test_document_upload()
+        self.test_market_position_in_valuation(valuation_result)
 
         # Print summary
         print("=" * 60)

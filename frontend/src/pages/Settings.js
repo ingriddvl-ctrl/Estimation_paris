@@ -45,6 +45,7 @@ const FIELD_LABELS = {
   concierge_bonus: { label: "Gardien / concierge", unit: "%", group: "Immeuble" },
   small_building_bonus: { label: "Petit immeuble (<10 lots)", unit: "%", group: "Immeuble" },
   sold_occupied_discount: { label: "Vendu occupé", unit: "%", group: "Juridique" },
+  max_cumulative_pct: { label: "Plafond cumulé ajustements", unit: "%", group: "Plafonnement" },
 };
 
 export default function Settings() {

@@ -1,4 +1,5 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Query
+from fastapi import FastAPI, APIRouter, HTTPException, Query, UploadFile, File
+from fastapi.responses import Response
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -6,6 +7,7 @@ import os
 import logging
 import httpx
 import math
+import requests
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional, Dict, Any
@@ -123,43 +125,44 @@ class ValuationResult(BaseModel):
     market_data: Dict[str, Any] = {}
 
 class AlgorithmConfig(BaseModel):
-    floor_rdc: float = -12.0
-    floor_1st: float = -6.0
+    floor_rdc: float = -10.0
+    floor_1st: float = -5.0
     floor_2_3_no_elevator: float = 0.0
-    floor_4_5_no_elevator: float = -5.0
-    floor_6_plus_no_elevator: float = -15.0
-    floor_last_with_elevator: float = 10.0
-    floor_per_level_elevator: float = 1.5
-    balcony_pct: float = 4.0
-    terrace_pct: float = 10.0
-    garden_pct: float = 15.0
-    south_traversant: float = 4.0
-    north_mono: float = -4.0
-    vis_a_vis_close: float = -6.0
-    view_monument: float = 12.0
-    view_rooftops: float = 5.0
-    view_garden: float = 3.0
-    view_wall: float = -6.0
-    dpe_ab: float = 4.0
+    floor_4_5_no_elevator: float = -4.0
+    floor_6_plus_no_elevator: float = -12.0
+    floor_last_with_elevator: float = 5.0
+    floor_per_level_elevator: float = 0.8
+    balcony_pct: float = 2.0
+    terrace_pct: float = 5.0
+    garden_pct: float = 8.0
+    south_traversant: float = 2.0
+    north_mono: float = -3.0
+    vis_a_vis_close: float = -5.0
+    view_monument: float = 8.0
+    view_rooftops: float = 3.0
+    view_garden: float = 2.0
+    view_wall: float = -5.0
+    dpe_ab: float = 3.0
     dpe_cd: float = 0.0
     dpe_e: float = -4.0
-    dpe_f: float = -12.0
-    dpe_g: float = -20.0
+    dpe_f: float = -10.0
+    dpe_g: float = -18.0
     parking_central: float = 40000.0
     parking_intermediate: float = 27000.0
-    parking_peripheral: float = 20000.0
-    ceiling_low: float = -7.0
+    parking_peripheral: float = 18000.0
+    ceiling_low: float = -5.0
     ceiling_standard: float = 0.0
-    ceiling_high: float = 5.0
+    ceiling_high: float = 3.0
     state_to_renovate: float = -1200.0
     state_refresh: float = -400.0
     state_good: float = 0.0
-    state_new: float = 10.0
-    state_luxury: float = 15.0
-    haussmann_bonus: float = 7.0
-    concierge_bonus: float = 3.0
-    small_building_bonus: float = 3.0
+    state_new: float = 5.0
+    state_luxury: float = 8.0
+    haussmann_bonus: float = 4.0
+    concierge_bonus: float = 1.5
+    small_building_bonus: float = 2.0
     sold_occupied_discount: float = -15.0
+    max_cumulative_pct: float = 18.0
 
 class SimulationRequest(BaseModel):
     property_price: float
@@ -387,11 +390,15 @@ async def estimate_valuation(req: ValuationRequest):
     except Exception as e:
         logger.warning(f"DVF API error: {e}")
 
-    # Calculate median from comparables
+    # Calculate trimmed median from comparables (remove top/bottom 10% to reduce outlier impact)
     if comparables:
         prices = sorted([c["price_per_sqm"] for c in comparables])
         n = len(prices)
-        base_price_sqm = prices[n // 2] if n % 2 == 1 else (prices[n // 2 - 1] + prices[n // 2]) / 2
+        # Trim 10% from each end
+        trim = max(1, n // 10)
+        trimmed = prices[trim:n-trim] if n > 4 else prices
+        tn = len(trimmed)
+        base_price_sqm = trimmed[tn // 2] if tn % 2 == 1 else (trimmed[tn // 2 - 1] + trimmed[tn // 2]) / 2
     
     confidence = min(95, 30 + len(comparables) * 3)
 
@@ -561,7 +568,16 @@ async def estimate_valuation(req: ValuationRequest):
         adjustments.append({"name": "Vendu occupé", "value": adj, "type": "pct", "detail": f"Bail en cours ({legal.remaining_lease_months} mois restants)", "hypothesis": hyp})
         total_pct_adjustment += adj
 
-    # 3. Calculate final price
+    # 3. Calculate final price with cumulative cap
+    # Cap cumulative % adjustments to avoid over-valuation
+    max_cap = config.max_cumulative_pct
+    if total_pct_adjustment > max_cap:
+        adjustments.append({"name": "Plafonnement", "value": round(max_cap - total_pct_adjustment, 1), "type": "pct", "detail": f"Ajustements cumulés plafonnés à +{max_cap}% (était +{round(total_pct_adjustment,1)}%)", "hypothesis": f"Les surcotes cumulées dépassaient +{round(total_pct_adjustment,1)}%. Un plafonnement à +{max_cap}% est appliqué pour rester réaliste. En pratique, les acheteurs ne paient jamais la somme arithmétique de tous les critères positifs — le marché impose une convergence."})
+        total_pct_adjustment = max_cap
+    elif total_pct_adjustment < -max_cap:
+        adjustments.append({"name": "Plafonnement", "value": round(-max_cap - total_pct_adjustment, 1), "type": "pct", "detail": f"Ajustements cumulés plafonnés à -{max_cap}%", "hypothesis": f"Les décotes cumulées dépassaient {round(total_pct_adjustment,1)}%. Un plancher à -{max_cap}% est appliqué."})
+        total_pct_adjustment = -max_cap
+
     adjusted_price_sqm = base_price_sqm * (1 + total_pct_adjustment / 100)
     total_price_median = adjusted_price_sqm * chars.surface_carrez + total_flat_adjustment
     
@@ -569,6 +585,23 @@ async def estimate_valuation(req: ValuationRequest):
     spread = 0.08 if confidence > 60 else 0.12
     total_price_low = total_price_median * (1 - spread)
     total_price_high = total_price_median * (1 + spread)
+
+    # Market position: compare to arrondissement average
+    final_sqm = adjusted_price_sqm
+    diff_vs_arr_pct = ((final_sqm - arr_avg) / arr_avg * 100) if arr_avg > 0 else 0
+    if diff_vs_arr_pct > 15:
+        market_position = {"label": "++", "description": "Nettement au-dessus du marché", "color": "green"}
+    elif diff_vs_arr_pct > 5:
+        market_position = {"label": "+", "description": "Au-dessus du marché", "color": "green"}
+    elif diff_vs_arr_pct > -5:
+        market_position = {"label": "=", "description": "Dans la moyenne du marché", "color": "neutral"}
+    elif diff_vs_arr_pct > -15:
+        market_position = {"label": "-", "description": "En-dessous du marché", "color": "red"}
+    else:
+        market_position = {"label": "--", "description": "Nettement en-dessous du marché", "color": "red"}
+    market_position["diff_pct"] = round(diff_vs_arr_pct, 1)
+    market_position["arr_avg"] = arr_avg
+    market_position["estimated_sqm"] = round(final_sqm)
 
     # Location scores (simplified)
     location_scores = {
@@ -639,6 +672,7 @@ async def estimate_valuation(req: ValuationRequest):
             "adjustment_flat": round(total_flat_adjustment),
             "base_source": "DVF Cerema (transactions réelles)" if comparables else "Moyenne parisienne (fallback)",
             "comparables_period": "2020–2025",
+            "market_position": market_position,
         }
     )
     return result.model_dump()
@@ -737,6 +771,180 @@ async def calculate_simulation(req: SimulationRequest):
             {"name": "Assurance emprunteur", "value": round(total_insurance)}
         ]
     }
+
+# ─── Object Storage for Documents ───
+
+STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
+EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY")
+APP_NAME = "valorisateur-paris"
+storage_key = None
+
+def init_storage():
+    global storage_key
+    if storage_key:
+        return storage_key
+    resp = requests.post(f"{STORAGE_URL}/init", json={"emergent_key": EMERGENT_KEY}, timeout=30)
+    resp.raise_for_status()
+    storage_key = resp.json()["storage_key"]
+    return storage_key
+
+def put_object(path: str, data: bytes, content_type: str) -> dict:
+    key = init_storage()
+    resp = requests.put(
+        f"{STORAGE_URL}/objects/{path}",
+        headers={"X-Storage-Key": key, "Content-Type": content_type},
+        data=data, timeout=120
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+def get_object(path: str):
+    key = init_storage()
+    resp = requests.get(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key}, timeout=60)
+    resp.raise_for_status()
+    return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
+
+@app.on_event("startup")
+async def startup():
+    try:
+        init_storage()
+        logger.info("Object storage initialized")
+    except Exception as e:
+        logger.warning(f"Storage init failed (non-blocking): {e}")
+
+ALLOWED_DOC_TYPES = {
+    "pdf": "application/pdf", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+    "png": "image/png", "doc": "application/msword",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "xls": "application/vnd.ms-excel",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "txt": "text/plain", "csv": "text/csv"
+}
+
+DOC_CATEGORIES = {
+    "pv_ag": "PV d'Assemblée Générale",
+    "releve_charges": "Relevé de charges",
+    "dpe": "Diagnostic de Performance Énergétique",
+    "diagnostic": "Diagnostic technique",
+    "reglement_copro": "Règlement de copropriété",
+    "plan": "Plan du bien",
+    "photo": "Photo",
+    "compromis": "Compromis de vente",
+    "autre": "Autre document",
+}
+
+@api_router.post("/documents/upload")
+async def upload_document(
+    file: UploadFile = File(...),
+    valuation_id: str = Query(""),
+    category: str = Query("autre"),
+):
+    ext = file.filename.split(".")[-1].lower() if "." in file.filename else "bin"
+    if ext not in ALLOWED_DOC_TYPES:
+        raise HTTPException(status_code=400, detail=f"Type de fichier non supporté: .{ext}")
+    
+    file_id = str(uuid.uuid4())
+    storage_path = f"{APP_NAME}/docs/{valuation_id or 'general'}/{file_id}.{ext}"
+    data = await file.read()
+    
+    if len(data) > 20 * 1024 * 1024:  # 20MB max
+        raise HTTPException(status_code=400, detail="Fichier trop volumineux (max 20Mo)")
+    
+    result = put_object(storage_path, data, file.content_type or ALLOWED_DOC_TYPES.get(ext, "application/octet-stream"))
+    
+    doc_record = {
+        "id": file_id,
+        "valuation_id": valuation_id,
+        "storage_path": result["path"],
+        "original_filename": file.filename,
+        "content_type": file.content_type,
+        "size": result.get("size", len(data)),
+        "category": category,
+        "category_label": DOC_CATEGORIES.get(category, "Autre"),
+        "is_deleted": False,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.documents.insert_one(doc_record)
+    doc_record.pop("_id", None)
+    return doc_record
+
+@api_router.get("/documents/{valuation_id}")
+async def list_documents(valuation_id: str):
+    docs = await db.documents.find(
+        {"valuation_id": valuation_id, "is_deleted": False}, {"_id": 0}
+    ).sort("created_at", -1).to_list(50)
+    return docs
+
+@api_router.get("/documents/download/{file_id}")
+async def download_document(file_id: str):
+    record = await db.documents.find_one({"id": file_id, "is_deleted": False})
+    if not record:
+        raise HTTPException(status_code=404, detail="Document not found")
+    data, content_type = get_object(record["storage_path"])
+    return Response(content=data, media_type=record.get("content_type", content_type),
+                    headers={"Content-Disposition": f'inline; filename="{record.get("original_filename", "document")}"'})
+
+@api_router.delete("/documents/{file_id}")
+async def delete_document(file_id: str):
+    result = await db.documents.update_one({"id": file_id}, {"$set": {"is_deleted": True}})
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return {"status": "deleted"}
+
+# ─── Market Listings (Offres en cours) ───
+
+@api_router.get("/market/listings")
+async def get_market_listings(
+    lat: float = Query(...),
+    lon: float = Query(...),
+    radius: int = Query(default=800),
+    min_surface: float = Query(default=0),
+    max_surface: float = Query(default=999),
+):
+    """Fetch current market listings from public API sources"""
+    listings = []
+    # Try DVF+ for recent (last 6 months) transactions as proxy for market
+    try:
+        delta = radius / 111000.0
+        bbox = f"{lon - delta},{lat - delta},{lon + delta},{lat + delta}"
+        async with httpx.AsyncClient(timeout=15) as client_http:
+            resp = await client_http.get(
+                "https://apidf-preprod.cerema.fr/dvf_opendata/geomutations/",
+                params={"in_bbox": bbox, "page_size": 30, "anneemut_min": 2023}
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                for f in data.get("features", []):
+                    p = f.get("properties", {})
+                    geom = f.get("geometry", {})
+                    coords = [lon, lat]
+                    if geom.get("type") in ["Polygon", "MultiPolygon"] and geom.get("coordinates"):
+                        ring = geom["coordinates"][0][0] if geom["type"] == "MultiPolygon" else geom["coordinates"][0]
+                        coords = [sum(c[0] for c in ring)/len(ring), sum(c[1] for c in ring)/len(ring)]
+                    price = p.get("valeurfonc")
+                    surface = p.get("sbati")
+                    if price and surface:
+                        pf, sf = float(price), float(surface)
+                        if pf > 10000 and sf > 9:
+                            listings.append({
+                                "source": "DVF (transaction récente)",
+                                "type": "transaction",
+                                "date": str(p.get("datemut", "")),
+                                "price": pf,
+                                "surface": sf,
+                                "price_per_sqm": round(pf / sf),
+                                "rooms": p.get("nbpiece", 0) or 0,
+                                "address": p.get("l_adresse", "") or f"Parcelle {p.get('l_idpar', '')}",
+                                "latitude": coords[1],
+                                "longitude": coords[0],
+                                "status": "vendu",
+                            })
+    except Exception as e:
+        logger.warning(f"Market listings fetch error: {e}")
+    
+    # Sort by date descending
+    listings.sort(key=lambda x: x.get("date", ""), reverse=True)
+    return listings
 
 app.include_router(api_router)
 
