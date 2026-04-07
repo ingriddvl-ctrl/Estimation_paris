@@ -4,11 +4,12 @@ import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
-import { ArrowLeft, Calculator, Share2, Copy, MapPin, TrendingUp, Shield, BarChart3, Loader2 } from "lucide-react";
+import { ArrowLeft, Calculator, Share2, Copy, MapPin, TrendingUp, Shield, BarChart3, Loader2, Lightbulb } from "lucide-react";
 import WaterfallChart from "@/components/WaterfallChart";
 import ComparablesMap from "@/components/ComparablesMap";
 import LocationScores from "@/components/LocationScores";
 import RiskPanel from "@/components/RiskPanel";
+import HypothesesPanel from "@/components/HypothesesPanel";
 
 function formatPrice(n) {
   if (!n) return "—";
@@ -110,8 +111,11 @@ export default function Results() {
         </div>
 
         {/* Tabs */}
-        <Tabs defaultValue="estimation" className="animate-fade-in-up stagger-2" data-testid="results-tabs">
+        <Tabs defaultValue="hypotheses" className="animate-fade-in-up stagger-2" data-testid="results-tabs">
           <TabsList className="bg-zinc-100 rounded-none p-0 h-10">
+            <TabsTrigger value="hypotheses" className="rounded-none text-xs data-[state=active]:bg-black data-[state=active]:text-white h-10 px-5" data-testid="tab-hypotheses">
+              <Lightbulb className="w-3.5 h-3.5 mr-1.5" /> Hypothèses
+            </TabsTrigger>
             <TabsTrigger value="estimation" className="rounded-none text-xs data-[state=active]:bg-black data-[state=active]:text-white h-10 px-5" data-testid="tab-estimation">
               <BarChart3 className="w-3.5 h-3.5 mr-1.5" /> Estimation
             </TabsTrigger>
@@ -125,6 +129,10 @@ export default function Results() {
               <Shield className="w-3.5 h-3.5 mr-1.5" /> Risques
             </TabsTrigger>
           </TabsList>
+
+          <TabsContent value="hypotheses" className="mt-6" data-testid="tab-content-hypotheses">
+            <HypothesesPanel adjustments={data.adjustments || []} marketData={data.market_data || {}} />
+          </TabsContent>
 
           <TabsContent value="estimation" className="mt-6" data-testid="tab-content-estimation">
             <WaterfallChart adjustments={data.adjustments || []} basePrice={data.market_data?.base_price_sqm || 0} finalPrice={data.price_per_sqm_median || 0} />

@@ -2,11 +2,12 @@ import { useState, useEffect } from "react";
 import { useParams, Link } from "react-router-dom";
 import { api } from "@/lib/api";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Loader2, BarChart3, MapPin, TrendingUp, Shield } from "lucide-react";
+import { Loader2, BarChart3, MapPin, TrendingUp, Shield, Lightbulb } from "lucide-react";
 import WaterfallChart from "@/components/WaterfallChart";
 import ComparablesMap from "@/components/ComparablesMap";
 import LocationScores from "@/components/LocationScores";
 import RiskPanel from "@/components/RiskPanel";
+import HypothesesPanel from "@/components/HypothesesPanel";
 
 function formatPrice(n) {
   if (!n) return "—";
@@ -68,13 +69,17 @@ export default function SharedView() {
           </div>
         </div>
 
-        <Tabs defaultValue="estimation" data-testid="shared-tabs">
+        <Tabs defaultValue="hypotheses" data-testid="shared-tabs">
           <TabsList className="bg-zinc-100 rounded-none p-0 h-10">
+            <TabsTrigger value="hypotheses" className="rounded-none text-xs data-[state=active]:bg-black data-[state=active]:text-white h-10 px-5"><Lightbulb className="w-3.5 h-3.5 mr-1.5" /> Hypothèses</TabsTrigger>
             <TabsTrigger value="estimation" className="rounded-none text-xs data-[state=active]:bg-black data-[state=active]:text-white h-10 px-5"><BarChart3 className="w-3.5 h-3.5 mr-1.5" /> Estimation</TabsTrigger>
             <TabsTrigger value="comparables" className="rounded-none text-xs data-[state=active]:bg-black data-[state=active]:text-white h-10 px-5"><MapPin className="w-3.5 h-3.5 mr-1.5" /> Comparables</TabsTrigger>
             <TabsTrigger value="localisation" className="rounded-none text-xs data-[state=active]:bg-black data-[state=active]:text-white h-10 px-5"><TrendingUp className="w-3.5 h-3.5 mr-1.5" /> Localisation</TabsTrigger>
             <TabsTrigger value="risques" className="rounded-none text-xs data-[state=active]:bg-black data-[state=active]:text-white h-10 px-5"><Shield className="w-3.5 h-3.5 mr-1.5" /> Risques</TabsTrigger>
           </TabsList>
+          <TabsContent value="hypotheses" className="mt-6">
+            <HypothesesPanel adjustments={data.adjustments || []} marketData={data.market_data || {}} />
+          </TabsContent>
           <TabsContent value="estimation" className="mt-6">
             <WaterfallChart adjustments={data.adjustments || []} basePrice={data.market_data?.base_price_sqm || 0} finalPrice={data.price_per_sqm_median || 0} />
           </TabsContent>
