@@ -149,7 +149,7 @@ export default function HypothesesPanel({ adjustments, marketData }) {
         {/* Price flow */}
         <div className="mt-5 flex items-center gap-3 flex-wrap">
           <div className="px-3 py-1.5 bg-white border border-zinc-200">
-            <p className="text-xs text-zinc-400 font-mono">Médiane DVF rue</p>
+            <p className="text-xs text-zinc-400 font-mono">Médiane DVF locale</p>
             <p className="font-mono text-sm font-bold">{formatPrice(basePrice)} €/m²</p>
           </div>
           <ArrowRight className="w-4 h-4 text-zinc-300 shrink-0" />

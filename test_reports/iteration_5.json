@@ -1,0 +1,60 @@
+{
+  "summary": "Comprehensive testing of DVF comparable filtering refactor (iteration 5). All backend APIs (15/15) passed. Frontend fully operational with all new features: relevance scores, excluded comparables with reasons, cross-calibration warning, manual exclusion with recalculate.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "passed_tests": [
+    "Backend: POST /api/valuation/estimate returns only transactions < 24 months (all dates >= 2024)",
+    "Backend: POST /api/valuation/estimate returns comparables_period = '24 derniers mois'",
+    "Backend: POST /api/valuation/estimate returns relevance_score (0-100) for each comparable",
+    "Backend: POST /api/valuation/estimate comparables sorted by relevance_score descending",
+    "Backend: POST /api/valuation/estimate returns excluded_comparables array",
+    "Backend: POST /api/valuation/estimate excluded_comparables have exclusion_reasons array",
+    "Backend: POST /api/valuation/estimate returns total_excluded in market_data",
+    "Backend: POST /api/valuation/estimate returns cross_calibration_warning mentioning SeLoger/LeBonCoin",
+    "Backend: POST /api/valuation/recalculate works with empty exclusions",
+    "Backend: POST /api/valuation/recalculate with excluded IDs returns different price and excluded_count > 0",
+    "Backend: POST /api/valuation/recalculate with nonexistent ID returns 404",
+    "Backend: GET /api/report/pdf/{id} returns valid PDF",
+    "Backend: GET /api/report/pdf/nonexistent returns 404",
+    "Backend: GET /api/listing/report/pdf/nonexistent returns 404",
+    "Backend: GET /api/valuation/{id} returns valuation with all new fields",
+    "Frontend: Landing page loads with all navigation links (nav-analyze, nav-history, nav-settings)",
+    "Frontend: ListingAnalyzer page at /analyze loads with upload zone and analyze button",
+    "Frontend: Results page /results/{id} loads with price summary and comparables count",
+    "Frontend: Results page Comparables tab shows relevance scores with visual bars (83, 80, 79, etc.)",
+    "Frontend: Results page shows cross-calibration warning with SeLoger/LeBonCoin/MeilleursAgents links",
+    "Frontend: Results page shows excluded transactions section expandable with exclusion reasons",
+    "Frontend: Results page rows are clickable for exclusion (toggle eye icon)",
+    "Frontend: Clicking row shows '1 comparable(s) exclu(s) manuellement' with Réinitialiser/Recalculer buttons",
+    "Frontend: Recalculate button triggers API call and shows new price result",
+    "Frontend: Toast notification 'Recalcul effectué — 19 comparables retenus' appears after recalculate"
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_dvf_filtering.py",
+    "/app/test_reports/pytest/pytest_results_iteration5.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Exclusion reasons are well-formatted and transparent: 'Surface trop éloignée', 'Surface trop petite — chambre de service', 'Prix/m² trop bas — probable cave/parking/viager', 'Transaction > 24 mois'",
+    "Relevance score calculation combines distance (40%), freshness (35%), and surface similarity (25%) - well documented in code",
+    "Progressive radius search (200m → 300m → 500m) ensures minimum 8 comparables before expanding"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_dvf_filtering.py"
+  ],
+  "success_rate": {
+    "backend": "100% (15/15 tests passed)",
+    "frontend": "100% (all features working correctly)"
+  },
+  "seed_data_creation": "Used valuation ID dc10a2f2-ee48-4f6d-ac3d-ff4e641ec802 created with new algorithm for testing",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "DVF filtering refactor fully tested. Key features: (1) 24-month max freshness (anneemut_min=2024), (2) relevance_score 0-100 for each comparable, (3) excluded_comparables with exclusion_reasons array, (4) cross_calibration_warning with SeLoger/LeBonCoin links, (5) POST /api/valuation/recalculate for manual exclusion with real-time price update. Test valuation ID dc10a2f2-ee48-4f6d-ac3d-ff4e641ec802 has all new fields. Old valuation a4278456-d469-4b25-845b-eccb2d32f8ff may not have all new fields."
+}

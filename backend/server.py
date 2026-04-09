@@ -312,6 +312,9 @@ def get_arrondissement_zone(postal_code: str) -> str:
 
 # ─── Spatial Resolution Helpers ───
 
+# Premium arrondissements with higher price/m² ceiling
+PREMIUM_ARRONDISSEMENTS = {"75006", "75007", "75008"}
+
 def haversine_meters(lat1, lon1, lat2, lon2):
     """Distance in meters between two GPS points"""
     R = 6371000
@@ -325,17 +328,51 @@ def _distance_weight(d_meters):
     """Weight by proximity: 0m→1.0, 100m→0.67, 200m→0.50, 500m→0.29"""
     return 1.0 / (1.0 + d_meters / 200.0)
 
-def _freshness_weight(date_str):
-    """Weight by recency: 2025→0.95, 2024→0.85, 2023→0.70, 2022→0.55, 2021→0.40"""
+def _freshness_weight_months(date_str):
+    """
+    RÈGLE ABSOLUE: max 24 mois.
+    3 mois→1.0, 12 mois→0.7, 24 mois→0.4. Au-delà→exclusion (returns 0).
+    """
     try:
-        year = int(str(date_str)[:4])
-    except (ValueError, TypeError):
+        parts = str(date_str).split("-")
+        year = int(parts[0])
+        month = int(parts[1]) if len(parts) > 1 else 6
+        ref_year, ref_month = 2026, 2  # current month
+        age_months = (ref_year - year) * 12 + (ref_month - month)
+    except (ValueError, TypeError, IndexError):
+        return 0  # exclude if date is unparseable
+    if age_months > 24:
+        return 0  # EXCLUSION: > 24 months
+    if age_months <= 3:
+        return 1.0
+    if age_months <= 12:
+        return 1.0 - (age_months - 3) * (0.3 / 9)  # 3mo=1.0 → 12mo=0.7
+    # 12 to 24 months
+    return 0.7 - (age_months - 12) * (0.3 / 12)  # 12mo=0.7 → 24mo=0.4
+
+def _surface_similarity_weight(comp_surface, target_surface):
+    """
+    SEGMENTATION: Coefficient de similarité surface.
+    ±30% = 1.0, ±30-50% = 0.5, au-delà = exclusion (returns 0).
+    """
+    if target_surface <= 0 or comp_surface <= 0:
+        return 0
+    ratio = abs(comp_surface - target_surface) / target_surface
+    if ratio <= 0.3:
+        return 1.0
+    if ratio <= 0.5:
         return 0.5
-    age = max(0, 2026 - year)
-    return max(0.25, 1.0 - age * 0.15)
+    return 0  # exclusion
+
+def _compute_relevance_score(distance_m, freshness_w, similarity_w):
+    """Score 0-100 combining distance, freshness and similarity."""
+    dist_score = max(0, 100 - distance_m / 5)  # 0m=100, 500m=0
+    fresh_score = freshness_w * 100
+    sim_score = similarity_w * 100
+    return round(dist_score * 0.4 + fresh_score * 0.35 + sim_score * 0.25)
 
 def weighted_median_price(comparables):
-    """Distance+freshness weighted median of price/m²"""
+    """Distance+freshness+similarity weighted median of price/m²"""
     if not comparables:
         return 0
     pairs = sorted([(c["price_per_sqm"], c.get("_weight", 1.0)) for c in comparables])
@@ -349,8 +386,8 @@ def weighted_median_price(comparables):
             return val
     return pairs[-1][0]
 
-def _parse_dvf_feature(f, ref_lat, ref_lon, max_radius):
-    """Parse a single DVF GeoJSON feature, return comparable dict or None"""
+def _parse_dvf_feature_raw(f, ref_lat, ref_lon, max_radius):
+    """Parse a single DVF GeoJSON feature into raw dict (before filtering)."""
     p = f.get("properties", {})
     geom = f.get("geometry", {})
     coords = None
@@ -367,15 +404,13 @@ def _parse_dvf_feature(f, ref_lat, ref_lon, max_radius):
     if not price or not surface:
         return None
     pf, sf = float(price), float(surface)
-    if pf <= 10000 or sf <= 9:
+    if pf <= 10000 or sf <= 0:
         return None
     clat, clon = coords[1], coords[0]
     d = haversine_meters(ref_lat, ref_lon, clat, clon)
     if d > max_radius:
         return None
     date_str = str(p.get("datemut", p.get("anneemut", "")))
-    dw = _distance_weight(d)
-    fw = _freshness_weight(date_str)
     return {
         "date": date_str,
         "price": pf,
@@ -387,54 +422,151 @@ def _parse_dvf_feature(f, ref_lat, ref_lon, max_radius):
         "longitude": clon,
         "price_per_sqm": round(pf / sf),
         "distance_m": round(d),
-        "_weight": round(dw * fw, 4),
+        "_parcel_id": p.get("l_idpar", ""),
     }
 
-async def fetch_dvf_progressive(lat, lon, min_comps=10):
+def _filter_and_score_comparables(raw_comps, target_surface, postal_code, excluded_ids=None):
+    """
+    NETTOYAGE OBLIGATOIRE + SCORING.
+    Applies: freshness 24mo cap, price bounds, surface bounds, duplicates, 2σ outlier removal.
+    Returns (included_list, excluded_list).
+    """
+    excluded_ids = set(excluded_ids or [])
+    is_premium = postal_code in PREMIUM_ARRONDISSEMENTS
+    price_max = 25000 if is_premium else 20000
+    included = []
+    excluded = []
+
+    # ── Step 1: Basic filters ──
+    seen_parcels = {}  # parcel_id → list of transactions for dedup
+    for c in raw_comps:
+        comp_id = f"{c['address']}_{c['date']}_{c['price']}"
+        reasons = []
+
+        # Manual exclusion
+        if comp_id in excluded_ids:
+            reasons.append("Exclu manuellement")
+            excluded.append({**c, "exclusion_reasons": reasons, "included": False})
+            continue
+
+        # Freshness: >24 months = exclusion
+        fw = _freshness_weight_months(c["date"])
+        if fw == 0:
+            reasons.append("Transaction > 24 mois")
+
+        # Price bounds
+        psqm = c["price_per_sqm"]
+        if psqm < 5000:
+            reasons.append(f"Prix/m² trop bas ({psqm}€) — probable cave/parking/viager")
+        if psqm > price_max:
+            reasons.append(f"Prix/m² trop élevé ({psqm}€ > {price_max}€)")
+
+        # Surface min
+        if c["surface"] < 20:
+            reasons.append(f"Surface trop petite ({c['surface']}m²) — chambre de service")
+
+        # Surface similarity vs target
+        sim_w = _surface_similarity_weight(c["surface"], target_surface)
+        if sim_w == 0:
+            reasons.append(f"Surface trop éloignée ({c['surface']}m² vs {target_surface}m² cible)")
+
+        # Duplicate detection (same parcel, same date/price)
+        pid = c.get("_parcel_id", "")
+        if pid:
+            key = f"{pid}_{c['date'][:10]}_{int(c['price'])}"
+            if key in seen_parcels:
+                reasons.append("Doublon — même parcelle/date/prix (probable lot en bloc)")
+            else:
+                seen_parcels[key] = True
+
+        if reasons:
+            excluded.append({**c, "exclusion_reasons": reasons, "included": False})
+        else:
+            dw = _distance_weight(c["distance_m"])
+            combined_w = round(dw * fw * sim_w, 4)
+            relevance = _compute_relevance_score(c["distance_m"], fw, sim_w)
+            included.append({
+                **c,
+                "_weight": combined_w,
+                "_freshness_w": round(fw, 3),
+                "_similarity_w": round(sim_w, 2),
+                "relevance_score": relevance,
+                "included": True,
+                "exclusion_reasons": [],
+            })
+
+    # ── Step 2: Outlier removal (2σ) ──
+    if len(included) >= 5:
+        prices = [c["price_per_sqm"] for c in included]
+        mean_p = sum(prices) / len(prices)
+        std_p = (sum((p - mean_p)**2 for p in prices) / len(prices)) ** 0.5
+        if std_p > 0:
+            lower = mean_p - 2 * std_p
+            upper = mean_p + 2 * std_p
+            new_included = []
+            for c in included:
+                if c["price_per_sqm"] < lower or c["price_per_sqm"] > upper:
+                    c["exclusion_reasons"] = [f"Outlier statistique (>{2}σ : {c['price_per_sqm']}€/m² hors [{int(lower)}-{int(upper)}])"]
+                    c["included"] = False
+                    excluded.append(c)
+                else:
+                    new_included.append(c)
+            included = new_included
+
+    # Sort included by relevance score descending
+    included.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
+    excluded.sort(key=lambda x: x.get("distance_m", 999))
+
+    return included, excluded
+
+
+async def _fetch_dvf_raw(lat, lon, radius):
+    """Fetch raw DVF data from Cerema API for a given radius. Returns raw parsed list."""
+    import asyncio
+    raw = []
+    delta = radius / 111000.0
+    bbox = f"{lon-delta},{lat-delta},{lon+delta},{lat+delta}"
+    # Only fetch recent 24 months: anneemut_min = 2024
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=15) as cl:
+                resp = await cl.get(
+                    "https://apidf-preprod.cerema.fr/dvf_opendata/geomutations/",
+                    params={"in_bbox": bbox, "page_size": 100, "anneemut_min": 2024}
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    for feat in data.get("features", []):
+                        c = _parse_dvf_feature_raw(feat, lat, lon, radius)
+                        if c:
+                            raw.append(c)
+                    return raw
+                elif resp.status_code == 503:
+                    await asyncio.sleep(1)
+                    continue
+                else:
+                    return raw
+        except Exception:
+            await asyncio.sleep(1)
+    return raw
+
+
+async def fetch_dvf_progressive(lat, lon, target_surface=70, postal_code="75001", min_comps=8, excluded_ids=None):
     """
     RÈGLE ABSOLUE: Jamais de moyenne d'arrondissement comme point de départ.
-    Recherche progressive: 200m → 300m → 500m → 800m.
-    Pondération par distance + fraîcheur.
-    Returns (comparables, search_radius_used).
+    Recherche progressive: 200m → 300m → 500m.
+    Filtrage strict: 24 mois max, anomalies, segmentation, outliers.
+    Returns (included, excluded, search_radius_used).
     """
-    import asyncio
-    radii = [200, 300, 500, 800]
+    radii = [200, 300, 500]
 
     for radius in radii:
-        comparables = []
-        delta = radius / 111000.0
-        bbox = f"{lon-delta},{lat-delta},{lon+delta},{lat+delta}"
+        raw = await _fetch_dvf_raw(lat, lon, radius)
+        included, excluded = _filter_and_score_comparables(raw, target_surface, postal_code, excluded_ids)
+        if len(included) >= min_comps:
+            return included, excluded, radius
 
-        for attempt in range(3):
-            try:
-                async with httpx.AsyncClient(timeout=15) as cl:
-                    resp = await cl.get(
-                        "https://apidf-preprod.cerema.fr/dvf_opendata/geomutations/",
-                        params={"in_bbox": bbox, "page_size": 100, "anneemut_min": 2020}
-                    )
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        for feat in data.get("features", []):
-                            c = _parse_dvf_feature(feat, lat, lon, radius)
-                            if c:
-                                comparables.append(c)
-                        break
-                    elif resp.status_code == 503:
-                        await asyncio.sleep(1)
-                        continue
-                    else:
-                        break
-            except Exception:
-                await asyncio.sleep(1)
-
-        if len(comparables) >= min_comps:
-            # Sort by weight descending (closest + most recent first)
-            comparables.sort(key=lambda x: x["_weight"], reverse=True)
-            return comparables, radius
-
-    # Return whatever we found at the largest radius
-    comparables.sort(key=lambda x: x["_weight"], reverse=True)
-    return comparables, radii[-1]
+    return included, excluded, radii[-1]
 
 def compute_micro_score(comparables, arr_avg):
     """Compute micro-location score from local DVF data"""
@@ -509,11 +641,18 @@ async def estimate_valuation(req: ValuationRequest):
     bldg = req.building
     legal = req.legal
 
-    # 1. Fetch DVF comparables via progressive radius search (200m → 300m → 500m → 800m)
+    # 1. Fetch DVF comparables via progressive radius search (200m → 300m → 500m)
+    # RÈGLE: max 24 mois, filtrage anomalies, segmentation par surface, outlier removal
     comparables = []
+    excluded_comparables = []
     search_radius = 200
     try:
-        comparables, search_radius = await fetch_dvf_progressive(loc.latitude, loc.longitude, min_comps=10)
+        comparables, excluded_comparables, search_radius = await fetch_dvf_progressive(
+            loc.latitude, loc.longitude,
+            target_surface=chars.surface_carrez,
+            postal_code=loc.postal_code,
+            min_comps=8,
+        )
     except Exception as e:
         logger.warning(f"DVF progressive search error: {e}")
 
@@ -522,7 +661,7 @@ async def estimate_valuation(req: ValuationRequest):
     if comparables:
         base_price_sqm = weighted_median_price(comparables)
     else:
-        # Fallback uniquement si 0 comparables trouvés même à 800m
+        # Fallback uniquement si 0 comparables trouvés même à 500m
         base_price_sqm = ARRONDISSEMENT_AVG_PRICES.get(loc.postal_code, 10500)
 
     confidence = min(95, 25 + len(comparables) * 2 + (15 if search_radius <= 300 else 5))
@@ -777,6 +916,10 @@ async def estimate_valuation(req: ValuationRequest):
     # Micro-location score
     micro_score = compute_micro_score(comparables, arr_avg)
 
+    # Strip internal fields from comparables for response
+    def _clean_comp(c):
+        return {k: v for k, v in c.items() if not k.startswith("_")}
+
     result = ValuationResult(
         request=req,
         price_low=round(total_price_low),
@@ -787,7 +930,7 @@ async def estimate_valuation(req: ValuationRequest):
         price_per_sqm_high=round(total_price_high / max(chars.surface_carrez, 1)),
         confidence_score=confidence,
         adjustments=adjustments,
-        comparables=comparables[:25],
+        comparables=[_clean_comp(c) for c in comparables[:25]],
         location_scores=location_scores,
         risks=risks,
         market_data={
@@ -796,16 +939,78 @@ async def estimate_valuation(req: ValuationRequest):
             "arrondissement": loc.postal_code,
             "zone": zone,
             "total_comparables": len(comparables),
+            "total_excluded": len(excluded_comparables),
             "search_radius_m": search_radius,
             "adjustment_pct": round(total_pct_adjustment, 1),
             "adjustment_flat": round(total_flat_adjustment),
-            "base_source": f"DVF Cerema — médiane pondérée ({search_radius}m)" if comparables else "Moyenne arrondissement (fallback — aucune transaction DVF trouvée)",
-            "comparables_period": "2020–2025",
+            "base_source": f"DVF Cerema — médiane pondérée ({search_radius}m, 24 mois max, filtré)" if comparables else "Moyenne arrondissement (fallback — aucune transaction DVF trouvée)",
+            "comparables_period": "24 derniers mois",
             "market_position": market_position,
             "micro_score": micro_score,
         }
     )
-    return result.model_dump()
+    resp = result.model_dump()
+    # Add excluded comparables for transparency
+    resp["excluded_comparables"] = [_clean_comp(c) for c in excluded_comparables[:20]]
+    # Cross-calibration warning
+    resp["cross_calibration_warning"] = f"Vérifiez la cohérence de l'estimation avec les annonces en cours sur SeLoger/LeBonCoin autour de {loc.address or 'cette adresse'} (prix affichés = +5 à 10% vs prix de transaction réel). La moyenne d'arrondissement ({arr_avg}€/m²) n'est PAS une référence valide à Paris — les écarts intra-arrondissement peuvent dépasser 50%."
+    return resp
+
+# ─── Recalculate with manual exclusions ───
+
+class RecalculateRequest(BaseModel):
+    valuation_id: str
+    excluded_comparable_ids: List[str] = Field(default_factory=list)
+
+@api_router.post("/valuation/recalculate")
+async def recalculate_valuation(req: RecalculateRequest):
+    """Recalculate an estimation after user manually excludes some comparables."""
+    doc = await db.valuations.find_one({"id": req.valuation_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Estimation introuvable")
+
+    orig_req = doc.get("request", {})
+    loc = orig_req.get("location", {})
+    chars = orig_req.get("characteristics", {})
+    lat = loc.get("latitude", 48.8566)
+    lon = loc.get("longitude", 2.3522)
+    surface = chars.get("surface_carrez", 70)
+    postal = loc.get("postal_code", "75001")
+
+    # Re-fetch DVF with exclusions
+    included, excluded, radius = await fetch_dvf_progressive(
+        lat, lon, target_surface=surface, postal_code=postal,
+        min_comps=5, excluded_ids=req.excluded_comparable_ids,
+    )
+
+    if not included:
+        raise HTTPException(status_code=400, detail="Plus aucun comparable valide après exclusion")
+
+    new_median = weighted_median_price(included)
+    arr_avg = ARRONDISSEMENT_AVG_PRICES.get(postal, 10500)
+    pct_adj = doc.get("market_data", {}).get("adjustment_pct", 0)
+    flat_adj = doc.get("market_data", {}).get("adjustment_flat", 0)
+
+    adjusted_sqm = new_median * (1 + pct_adj / 100)
+    new_price_median = adjusted_sqm * surface + flat_adj
+    spread = 0.08 if len(included) > 10 else 0.12
+
+    def _clean(c):
+        return {k: v for k, v in c.items() if not k.startswith("_")}
+
+    return {
+        "new_base_price_sqm": round(new_median),
+        "new_price_per_sqm_median": round(adjusted_sqm),
+        "new_price_median": round(new_price_median),
+        "new_price_low": round(new_price_median * (1 - spread)),
+        "new_price_high": round(new_price_median * (1 + spread)),
+        "comparables_count": len(included),
+        "excluded_count": len(excluded),
+        "search_radius_m": radius,
+        "comparables": [_clean(c) for c in included[:25]],
+        "excluded_comparables": [_clean(c) for c in excluded[:20]],
+    }
+
 
 # ─── Save / History / Share ───
 
@@ -1141,13 +1346,20 @@ ANALYSIS_PROMPT_TEMPLATE = """Tu es un expert en valorisation immobilière paris
 
 Le prix demandé est de {asking_price}€ pour {surface}m² soit {price_sqm}€/m².
 
-DONNÉES DE MARCHÉ LOCALES (transactions DVF réelles):
-- Médiane pondérée (distance+fraîcheur) dans un rayon de {search_radius}m : {local_median}€/m²
-- Nombre de transactions comparables : {num_comparables}
-- Moyenne de l'arrondissement : {arr_avg}€/m²
+DONNÉES DE MARCHÉ LOCALES (transactions DVF réelles, 24 derniers mois uniquement, filtrées):
+- Médiane pondérée (distance+fraîcheur+similarité) dans un rayon de {search_radius}m : {local_median}€/m²
+- Nombre de transactions comparables retenues : {num_comparables}
+- Nombre de transactions exclues (anomalies/outliers) : {num_excluded}
+- Moyenne de l'arrondissement : {arr_avg}€/m² (ATTENTION: cette moyenne n'est PAS une référence fiable — les écarts intra-arrondissement peuvent dépasser 50% à Paris)
 - Prime de micro-localisation : {local_premium}% vs arrondissement
 
 IMPORTANT: Base-toi PRINCIPALEMENT sur la médiane locale DVF ({local_median}€/m²), PAS la moyenne d'arrondissement.
+
+RÈGLE DU VERDICT (OBLIGATOIRE):
+- Si l'écart entre le prix demandé/m² et la médiane locale est INFÉRIEUR à 10% → verdict = "prix_juste" (DANS LE MARCHÉ / PRIX COHÉRENT)
+- Si l'écart est entre 10% et 20% au-dessus → verdict = "surévalué"
+- Si l'écart est > 20% au-dessus → verdict = "très_surévalué"
+- Si le prix est > 15% EN-DESSOUS de la médiane → verdict = "sous-évalué" + AJOUTER un warning: "Une sous-évaluation > 15% est statistiquement rare sur le marché parisien et suggère des informations manquantes (vice caché, servitude, occupation, travaux lourds)"
 
 ANALYSE DE PRIX — Réponds en JSON UNIQUEMENT:
 {{
@@ -1159,7 +1371,8 @@ ANALYSE DE PRIX — Réponds en JSON UNIQUEMENT:
   "arguments_for": ["3-5 arguments qui justifient un prix élevé"],
   "arguments_against": ["3-5 arguments qui justifient un prix plus bas"],
   "negotiation_tips": ["2-3 conseils de négociation spécifiques à ce bien"],
-  "verdict": "paragraphe de 4-5 lignes avec ton verdict argumenté sur le prix demandé, en étant direct et factuel. Base ton analyse sur la médiane locale DVF."
+  "undervaluation_warning": "string ou null — warning si sous-évaluation > 15%",
+  "verdict": "paragraphe de 4-5 lignes avec ton verdict argumenté basé EXCLUSIVEMENT sur la médiane locale DVF. Sois direct et factuel. Mentionne explicitement l'écart en % avec la médiane locale."
 }}"""
 
 @api_router.post("/listing/analyze")
@@ -1227,10 +1440,14 @@ async def analyze_listing(file: UploadFile = File(...)):
         local_median = arr_avg
         search_radius = 0
         local_comparables = []
+        local_excluded = []
         micro = {"local_premium_pct": 0}
 
         if geo:
-            local_comparables, search_radius = await fetch_dvf_progressive(geo["latitude"], geo["longitude"], min_comps=8)
+            local_comparables, local_excluded, search_radius = await fetch_dvf_progressive(
+                geo["latitude"], geo["longitude"],
+                target_surface=surface, postal_code=postal, min_comps=8,
+            )
             if local_comparables:
                 local_median = weighted_median_price(local_comparables)
                 micro = compute_micro_score(local_comparables, arr_avg)
@@ -1247,6 +1464,7 @@ async def analyze_listing(file: UploadFile = File(...)):
             local_median=f"{local_median:,.0f}",
             search_radius=search_radius,
             num_comparables=len(local_comparables),
+            num_excluded=len(local_excluded),
             local_premium=f"{micro.get('local_premium_pct', 0):+.1f}",
         )
 
@@ -1264,6 +1482,9 @@ async def analyze_listing(file: UploadFile = File(...)):
         analysis = json_mod.loads(raw2)
 
         # Build result with DVF local data
+        def _clean(c):
+            return {k: v for k, v in c.items() if not k.startswith("_")}
+
         analysis_id = str(uuid.uuid4())
         result_data = {
             "status": "success",
@@ -1276,14 +1497,14 @@ async def analyze_listing(file: UploadFile = File(...)):
                 "local_dvf_median_sqm": round(local_median),
                 "search_radius_m": search_radius,
                 "num_comparables": len(local_comparables),
+                "num_excluded": len(local_excluded),
                 "postal_code": postal,
                 "asking_price_sqm": price_sqm,
                 "micro_score": micro,
             },
-            "comparables": [
-                {k: v for k, v in c.items() if k != "_weight"}
-                for c in local_comparables[:15]
-            ],
+            "comparables": [_clean(c) for c in local_comparables[:15]],
+            "excluded_comparables": [_clean(c) for c in local_excluded[:10]],
+            "cross_calibration_warning": f"Vérifiez la cohérence avec les annonces en cours sur SeLoger/LeBonCoin autour de cette adresse (prix affichés = +5 à 10% vs prix de transaction réel).",
         }
 
         # Save to MongoDB for PDF export

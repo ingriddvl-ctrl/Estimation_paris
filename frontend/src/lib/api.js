@@ -35,6 +35,12 @@ export const api = {
       timeout: 120000,
     }).then(r => r.data);
   },
+  recalculateValuation: (valuationId, excludedIds) => {
+    return axios.post(`${API}/valuation/recalculate`, {
+      valuation_id: valuationId,
+      excluded_comparable_ids: excludedIds,
+    }).then(r => r.data);
+  },
   downloadPdfReport: (valuationId) => {
     return axios.get(`${API}/report/pdf/${valuationId}`, { responseType: "blob" }).then(r => {
       const url = window.URL.createObjectURL(new Blob([r.data], { type: "application/pdf" }));
