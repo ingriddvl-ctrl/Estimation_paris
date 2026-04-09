@@ -197,6 +197,8 @@ export default function Results() {
               searchRadius={data.market_data?.search_radius_m}
               valuationId={id}
               crossCalibrationWarning={data.cross_calibration_warning}
+              circleStats={data.circle_stats}
+              streetCoefficient={data.street_coefficient}
             />
           </TabsContent>
 

@@ -242,6 +242,22 @@ export default function ListingAnalyzer() {
                     <span className="text-xs text-zinc-500">Rayon de recherche</span>
                     <span className="font-mono text-sm">{mkt.search_radius_m || "?"}m ({mkt.num_comparables || 0} transactions)</span>
                   </div>
+                  {mkt.circle_stats && (
+                    <div className="flex justify-between">
+                      <span className="text-xs text-zinc-500">Fiabilité</span>
+                      <span className={`font-mono text-sm font-bold ${
+                        mkt.circle_stats.reliability === "HAUTE" ? "text-[#008A00]" :
+                        mkt.circle_stats.reliability === "MOYENNE" ? "text-[#F59E0B]" :
+                        "text-[#E60000]"
+                      }`}>{mkt.circle_stats.reliability || "?"}</span>
+                    </div>
+                  )}
+                  {mkt.street_coefficient && mkt.street_coefficient !== 1.0 && (
+                    <div className="flex justify-between">
+                      <span className="text-xs text-zinc-500">Coeff. rue</span>
+                      <span className="font-mono text-sm">{mkt.street_coefficient_detail || mkt.street_coefficient}</span>
+                    </div>
+                  )}
                   <div className="flex justify-between">
                     <span className="text-xs text-zinc-500">Moy. arrondissement</span>
                     <span className="font-mono text-sm text-zinc-400">{formatPrice(mkt.arrondissement_avg_sqm)} €/m²</span>

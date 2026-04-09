@@ -312,6 +312,8 @@ def get_arrondissement_zone(postal_code: str) -> str:
 
 # ─── Spatial Resolution Helpers ───
 
+import re as re_mod
+
 # Premium arrondissements with higher price/m² ceiling
 PREMIUM_ARRONDISSEMENTS = {"75006", "75007", "75008"}
 
@@ -323,6 +325,67 @@ def haversine_meters(lat1, lon1, lat2, lon2):
     dl = math.radians(lon2 - lon1)
     a = math.sin(dp/2)**2 + math.cos(p1)*math.cos(p2)*math.sin(dl/2)**2
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+
+# ── Street Name Extraction & Classification ──
+
+def _normalize_street(raw):
+    """Normalize a street name for matching."""
+    s = str(raw).upper().strip()
+    s = s.strip("[]'\"")
+    s = re_mod.sub(r'^\d+[\s,]*', '', s).strip()
+    s = re_mod.sub(r'\s+\d+$', '', s).strip()
+    return s
+
+def _extract_street_from_user_address(addr):
+    """Extract street name from '22 Avenue de Lamballe 75016 Paris'."""
+    s = str(addr).upper().strip()
+    s = re_mod.sub(r'\b750\d{2}\b.*', '', s).strip()
+    s = re_mod.sub(r'^\d+[\s,]*', '', s).strip()
+    return s
+
+def _street_names_match(street1, street2):
+    """Check if two normalized street names refer to the same street."""
+    if not street1 or not street2:
+        return False
+    s1 = _normalize_street(street1)
+    s2 = _normalize_street(street2)
+    if not s1 or not s2:
+        return False
+    if s1 == s2:
+        return True
+    if s1 in s2 or s2 in s1:
+        return True
+    def _core(s):
+        for pfx in ["RUE DE LA ", "RUE DU ", "RUE DE L'", "RUE DES ", "RUE DE ",
+                     "RUE D'", "RUE ", "AVENUE DE LA ", "AVENUE DU ", "AVENUE DE L'",
+                     "AVENUE DES ", "AVENUE DE ", "AVENUE D'", "AVENUE ",
+                     "BOULEVARD DE LA ", "BOULEVARD DU ", "BOULEVARD DES ", "BOULEVARD DE ", "BOULEVARD ",
+                     "IMPASSE DE LA ", "IMPASSE DU ", "IMPASSE ", "VILLA ", "PASSAGE ", "PLACE DE LA ",
+                     "PLACE DU ", "PLACE DES ", "PLACE DE ", "PLACE "]:
+            if s.startswith(pfx):
+                return s[len(pfx):]
+        return s
+    return _core(s1) == _core(s2)
+
+def _classify_street_type(street_name):
+    """
+    Type A — Boulevard / Avenue (larges, commerçants, bruyants)
+    Type B — Rue résidentielle moyenne
+    Type C — Petite rue calme / impasse / villa / passage
+    """
+    s = _normalize_street(street_name)
+    if not s:
+        return "B"
+    for pfx in ["AVENUE", "BOULEVARD", "COURS", "PLACE", "ESPLANADE", "QUAI"]:
+        if s.startswith(pfx):
+            return "A"
+    for pfx in ["IMPASSE", "VILLA", "PASSAGE", "ALLEE", "ALLÉE", "CITE", "CITÉ",
+                "SQUARE", "VOIE", "SENTIER", "COUR ", "HAMEAU", "CHEMIN"]:
+        if s.startswith(pfx):
+            return "C"
+    return "B"
+
+# ── Weighting Functions ──
 
 def _distance_weight(d_meters):
     """Weight by proximity: 0m→1.0, 100m→0.67, 200m→0.50, 500m→0.29"""
@@ -364,12 +427,13 @@ def _surface_similarity_weight(comp_surface, target_surface):
         return 0.5
     return 0  # exclusion
 
-def _compute_relevance_score(distance_m, freshness_w, similarity_w):
-    """Score 0-100 combining distance, freshness and similarity."""
-    dist_score = max(0, 100 - distance_m / 5)  # 0m=100, 500m=0
+def _compute_relevance_score(distance_m, freshness_w, similarity_w, circle_bonus=0):
+    """Score 0-100 combining distance, freshness, similarity + circle bonus."""
+    dist_score = max(0, 100 - distance_m / 5)
     fresh_score = freshness_w * 100
     sim_score = similarity_w * 100
-    return round(dist_score * 0.4 + fresh_score * 0.35 + sim_score * 0.25)
+    base = dist_score * 0.35 + fresh_score * 0.3 + sim_score * 0.2 + circle_bonus
+    return min(100, round(base))
 
 def weighted_median_price(comparables):
     """Distance+freshness+similarity weighted median of price/m²"""
@@ -387,7 +451,7 @@ def weighted_median_price(comparables):
     return pairs[-1][0]
 
 def _parse_dvf_feature_raw(f, ref_lat, ref_lon, max_radius):
-    """Parse a single DVF GeoJSON feature into raw dict (before filtering)."""
+    """Parse a single DVF GeoJSON feature into raw dict with street data."""
     p = f.get("properties", {})
     geom = f.get("geometry", {})
     coords = None
@@ -411,66 +475,85 @@ def _parse_dvf_feature_raw(f, ref_lat, ref_lon, max_radius):
     if d > max_radius:
         return None
     date_str = str(p.get("datemut", p.get("anneemut", "")))
+    raw_address = p.get("l_adresse", "") or f"Parcelle {p.get('l_idpar', '')}"
+    street = _normalize_street(raw_address)
     return {
-        "date": date_str,
-        "price": pf,
-        "surface": sf,
+        "date": date_str, "price": pf, "surface": sf,
         "rooms": p.get("nbpiece", 0) or 0,
-        "address": p.get("l_adresse", "") or f"Parcelle {p.get('l_idpar', '')}",
+        "address": raw_address,
         "postal_code": str(p.get("l_codinsee", ""))[:5],
-        "latitude": clat,
-        "longitude": clon,
-        "price_per_sqm": round(pf / sf),
-        "distance_m": round(d),
+        "latitude": clat, "longitude": clon,
+        "price_per_sqm": round(pf / sf), "distance_m": round(d),
         "_parcel_id": p.get("l_idpar", ""),
+        "_street_name": street, "_street_type": _classify_street_type(street),
     }
 
-def _filter_and_score_comparables(raw_comps, target_surface, postal_code, excluded_ids=None):
+# ── Concentric Circle Logic ──
+
+def _assign_circle(comp, target_street, target_street_type):
     """
-    NETTOYAGE OBLIGATOIRE + SCORING.
-    Applies: freshness 24mo cap, price bounds, surface bounds, duplicates, 2σ outlier removal.
-    Returns (included_list, excluded_list).
+    C1 — Même rue (poids x3)
+    C2 — Même type de rue dans 200m (poids x1.5)
+    C3 — Rayon élargi (poids x1 si même type, x0.3 si type très différent)
+
+    Note: L'API DVF Cerema retourne souvent des parcelles cadastrales au lieu
+    de noms de rue. Quand l'adresse est une parcelle, utiliser la distance
+    comme heuristique: < 50m ≈ même rue, < 150m ≈ rue voisine.
     """
+    comp_street = comp.get("_street_name", "")
+    comp_type = comp.get("_street_type", "B")
+    distance = comp.get("distance_m", 999)
+    is_parcel = "PARCELLE" in comp_street.upper() or not comp_street
+
+    # Si on a un vrai nom de rue, matching exact
+    if not is_parcel and target_street:
+        if _street_names_match(comp_street, target_street):
+            return 1, 3.0
+        if distance <= 200 and comp_type == target_street_type:
+            return 2, 1.5
+        if comp_type == target_street_type:
+            return 3, 1.0
+        type_diff = abs(ord(comp_type) - ord(target_street_type))
+        if type_diff >= 2:
+            return 3, 0.3
+        return 3, 0.6
+
+    # Heuristique distance pour parcelles sans nom de rue
+    if distance <= 50:
+        return 1, 2.5  # Très proche = probable même rue
+    if distance <= 150:
+        return 2, 1.5  # Rue voisine
+    return 3, 1.0
+
+def _filter_and_score_comparables(raw_comps, target_surface, postal_code,
+                                   target_street="", target_street_type="B",
+                                   excluded_ids=None):
+    """NETTOYAGE + CERCLES CONCENTRIQUES + SCORING. Returns (included, excluded, circle_stats)."""
     excluded_ids = set(excluded_ids or [])
     is_premium = postal_code in PREMIUM_ARRONDISSEMENTS
     price_max = 25000 if is_premium else 20000
-    included = []
-    excluded = []
-
-    # ── Step 1: Basic filters ──
-    seen_parcels = {}  # parcel_id → list of transactions for dedup
+    included, excluded = [], []
+    seen_parcels = {}
     for c in raw_comps:
         comp_id = f"{c['address']}_{c['date']}_{c['price']}"
         reasons = []
-
-        # Manual exclusion
         if comp_id in excluded_ids:
             reasons.append("Exclu manuellement")
-            excluded.append({**c, "exclusion_reasons": reasons, "included": False})
+            excluded.append({**c, "exclusion_reasons": reasons, "included": False, "circle": 0})
             continue
-
-        # Freshness: >24 months = exclusion
         fw = _freshness_weight_months(c["date"])
         if fw == 0:
             reasons.append("Transaction > 24 mois")
-
-        # Price bounds
         psqm = c["price_per_sqm"]
         if psqm < 5000:
             reasons.append(f"Prix/m² trop bas ({psqm}€) — probable cave/parking/viager")
         if psqm > price_max:
             reasons.append(f"Prix/m² trop élevé ({psqm}€ > {price_max}€)")
-
-        # Surface min
         if c["surface"] < 20:
             reasons.append(f"Surface trop petite ({c['surface']}m²) — chambre de service")
-
-        # Surface similarity vs target
         sim_w = _surface_similarity_weight(c["surface"], target_surface)
         if sim_w == 0:
             reasons.append(f"Surface trop éloignée ({c['surface']}m² vs {target_surface}m² cible)")
-
-        # Duplicate detection (same parcel, same date/price)
         pid = c.get("_parcel_id", "")
         if pid:
             key = f"{pid}_{c['date'][:10]}_{int(c['price'])}"
@@ -478,55 +561,67 @@ def _filter_and_score_comparables(raw_comps, target_surface, postal_code, exclud
                 reasons.append("Doublon — même parcelle/date/prix (probable lot en bloc)")
             else:
                 seen_parcels[key] = True
-
         if reasons:
-            excluded.append({**c, "exclusion_reasons": reasons, "included": False})
+            excluded.append({**c, "exclusion_reasons": reasons, "included": False, "circle": 0})
         else:
+            circle, circle_mult = _assign_circle(c, target_street, target_street_type)
             dw = _distance_weight(c["distance_m"])
-            combined_w = round(dw * fw * sim_w, 4)
-            relevance = _compute_relevance_score(c["distance_m"], fw, sim_w)
+            combined_w = round(dw * fw * sim_w * circle_mult, 4)
+            circle_bonus = 15 if circle == 1 else (5 if circle == 2 else 0)
+            relevance = _compute_relevance_score(c["distance_m"], fw, sim_w, circle_bonus)
             included.append({
-                **c,
-                "_weight": combined_w,
-                "_freshness_w": round(fw, 3),
-                "_similarity_w": round(sim_w, 2),
-                "relevance_score": relevance,
-                "included": True,
-                "exclusion_reasons": [],
+                **c, "_weight": combined_w, "_freshness_w": round(fw, 3),
+                "_similarity_w": round(sim_w, 2), "_circle_mult": circle_mult,
+                "circle": circle, "relevance_score": relevance,
+                "included": True, "exclusion_reasons": [],
             })
-
-    # ── Step 2: Outlier removal (2σ) ──
     if len(included) >= 5:
         prices = [c["price_per_sqm"] for c in included]
         mean_p = sum(prices) / len(prices)
         std_p = (sum((p - mean_p)**2 for p in prices) / len(prices)) ** 0.5
         if std_p > 0:
-            lower = mean_p - 2 * std_p
-            upper = mean_p + 2 * std_p
+            lower, upper = mean_p - 2 * std_p, mean_p + 2 * std_p
             new_included = []
             for c in included:
                 if c["price_per_sqm"] < lower or c["price_per_sqm"] > upper:
-                    c["exclusion_reasons"] = [f"Outlier statistique (>{2}σ : {c['price_per_sqm']}€/m² hors [{int(lower)}-{int(upper)}])"]
+                    c["exclusion_reasons"] = [f"Outlier >2σ ({c['price_per_sqm']}€/m² hors [{int(lower)}-{int(upper)}])"]
                     c["included"] = False
+                    c["circle"] = 0
                     excluded.append(c)
                 else:
                     new_included.append(c)
             included = new_included
-
-    # Sort included by relevance score descending
-    included.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
+    included.sort(key=lambda x: (x.get("circle", 3), -x.get("relevance_score", 0)))
     excluded.sort(key=lambda x: x.get("distance_m", 999))
+    c1 = len([c for c in included if c.get("circle") == 1])
+    c2 = len([c for c in included if c.get("circle") == 2])
+    c3 = len([c for c in included if c.get("circle") == 3])
+    reliability = "HAUTE" if c1 >= 8 else ("MOYENNE" if c1 + c2 >= 5 else "BASSE")
+    circle_stats = {"circle_1_count": c1, "circle_2_count": c2, "circle_3_count": c3,
+                    "reliability": reliability, "target_street": target_street, "target_street_type": target_street_type}
+    return included, excluded, circle_stats
 
-    return included, excluded
+def _compute_street_coefficient(included, target_street):
+    """Coefficient de rue = médiane même rue / médiane zone."""
+    if not included or not target_street:
+        return 1.0, "Neutre (données insuffisantes)"
+    same = [c for c in included if _street_names_match(c.get("_street_name", ""), target_street)]
+    if len(same) < 3:
+        return 1.0, f"Neutre — {len(same)} transaction(s) sur la rue"
+    sm = weighted_median_price(same)
+    am = weighted_median_price(included)
+    if am == 0:
+        return 1.0, "Neutre"
+    coeff = round(sm / am, 3)
+    return coeff, f"Coeff. rue : {coeff:.2f} (rue {sm}€/m² vs zone {am}€/m²)"
 
 
 async def _fetch_dvf_raw(lat, lon, radius):
-    """Fetch raw DVF data from Cerema API for a given radius. Returns raw parsed list."""
+    """Fetch raw DVF data from Cerema API for a given radius."""
     import asyncio
     raw = []
     delta = radius / 111000.0
     bbox = f"{lon-delta},{lat-delta},{lon+delta},{lat+delta}"
-    # Only fetch recent 24 months: anneemut_min = 2024
     for attempt in range(3):
         try:
             async with httpx.AsyncClient(timeout=15) as cl:
@@ -551,22 +646,32 @@ async def _fetch_dvf_raw(lat, lon, radius):
     return raw
 
 
-async def fetch_dvf_progressive(lat, lon, target_surface=70, postal_code="75001", min_comps=8, excluded_ids=None):
+async def fetch_dvf_progressive(lat, lon, target_surface=70, postal_code="75001",
+                                 target_street="", min_comps=8, excluded_ids=None):
     """
-    RÈGLE ABSOLUE: Jamais de moyenne d'arrondissement comme point de départ.
-    Recherche progressive: 200m → 300m → 500m.
-    Filtrage strict: 24 mois max, anomalies, segmentation, outliers.
-    Returns (included, excluded, search_radius_used).
+    HIÉRARCHIE DES CERCLES CONCENTRIQUES:
+      C1 — Même rue (poids x3)
+      C2 — Même type de rue dans 200m (poids x1.5)
+      C3 — Rayon élargi 300-500m (poids x1)
+    Returns (included, excluded, radius, circle_stats, street_coeff, street_coeff_detail).
     """
+    target_street_type = _classify_street_type(target_street)
     radii = [200, 300, 500]
+    included, excluded, circle_stats = [], [], {}
 
     for radius in radii:
         raw = await _fetch_dvf_raw(lat, lon, radius)
-        included, excluded = _filter_and_score_comparables(raw, target_surface, postal_code, excluded_ids)
+        included, excluded, circle_stats = _filter_and_score_comparables(
+            raw, target_surface, postal_code,
+            target_street=target_street, target_street_type=target_street_type,
+            excluded_ids=excluded_ids,
+        )
         if len(included) >= min_comps:
-            return included, excluded, radius
+            sc, scd = _compute_street_coefficient(included, target_street)
+            return included, excluded, radius, circle_stats, sc, scd
 
-    return included, excluded, radii[-1]
+    sc, scd = _compute_street_coefficient(included, target_street)
+    return included, excluded, radii[-1], circle_stats, sc, scd
 
 def compute_micro_score(comparables, arr_avg):
     """Compute micro-location score from local DVF data"""
@@ -610,7 +715,7 @@ async def geocode_address(address_text):
                 if feats:
                     coords = feats[0]["geometry"]["coordinates"]
                     props = feats[0]["properties"]
-                    return {"latitude": coords[1], "longitude": coords[0], "postal_code": props.get("postcode", ""), "label": props.get("label", "")}
+                    return {"latitude": coords[1], "longitude": coords[0], "postal_code": props.get("postcode", ""), "label": props.get("label", ""), "street": props.get("street", props.get("name", ""))}
     except Exception as e:
         logger.warning(f"Geocode error: {e}")
     return None
@@ -642,29 +747,40 @@ async def estimate_valuation(req: ValuationRequest):
     legal = req.legal
 
     # 1. Fetch DVF comparables via progressive radius search (200m → 300m → 500m)
-    # RÈGLE: max 24 mois, filtrage anomalies, segmentation par surface, outlier removal
+    # HIÉRARCHIE: Cercle 1 (même rue x3) → Cercle 2 (même type 200m x1.5) → Cercle 3
     comparables = []
     excluded_comparables = []
     search_radius = 200
+    circle_stats = {}
+    street_coeff = 1.0
+    street_coeff_detail = ""
+    target_street = _extract_street_from_user_address(loc.address or "")
     try:
-        comparables, excluded_comparables, search_radius = await fetch_dvf_progressive(
+        comparables, excluded_comparables, search_radius, circle_stats, street_coeff, street_coeff_detail = await fetch_dvf_progressive(
             loc.latitude, loc.longitude,
             target_surface=chars.surface_carrez,
             postal_code=loc.postal_code,
+            target_street=target_street,
             min_comps=8,
         )
     except Exception as e:
         logger.warning(f"DVF progressive search error: {e}")
 
-    # RÈGLE ABSOLUE: le prix de base = toujours la médiane pondérée des transactions réelles
-    # Jamais un prix moyen d'arrondissement
+    # RÈGLE ABSOLUE: prix de base = médiane pondérée DVF locale
+    # Appliquer le coefficient de rue si les comparables viennent d'autres rues
     if comparables:
-        base_price_sqm = weighted_median_price(comparables)
+        raw_median = weighted_median_price(comparables)
+        # Si le coefficient de rue est significatif et qu'on a assez de data, corriger
+        if street_coeff != 1.0 and abs(street_coeff - 1.0) > 0.05:
+            base_price_sqm = round(raw_median * street_coeff)
+        else:
+            base_price_sqm = raw_median
     else:
-        # Fallback uniquement si 0 comparables trouvés même à 500m
         base_price_sqm = ARRONDISSEMENT_AVG_PRICES.get(loc.postal_code, 10500)
 
-    confidence = min(95, 25 + len(comparables) * 2 + (15 if search_radius <= 300 else 5))
+    reliability = circle_stats.get("reliability", "BASSE")
+    confidence = min(95, 25 + len(comparables) * 2 + (15 if search_radius <= 300 else 5)
+                     + (10 if reliability == "HAUTE" else (5 if reliability == "MOYENNE" else 0)))
 
     # 2. Apply adjustments
     adjustments = []
@@ -947,11 +1063,17 @@ async def estimate_valuation(req: ValuationRequest):
             "comparables_period": "24 derniers mois",
             "market_position": market_position,
             "micro_score": micro_score,
+            "reliability": reliability,
+            "street_coefficient": street_coeff,
+            "street_coefficient_detail": street_coeff_detail,
         }
     )
     resp = result.model_dump()
     # Add excluded comparables for transparency
     resp["excluded_comparables"] = [_clean_comp(c) for c in excluded_comparables[:20]]
+    # Circle stats and street coefficient
+    resp["circle_stats"] = circle_stats
+    resp["street_coefficient"] = {"value": street_coeff, "detail": street_coeff_detail}
     # Cross-calibration warning
     resp["cross_calibration_warning"] = f"Vérifiez la cohérence de l'estimation avec les annonces en cours sur SeLoger/LeBonCoin autour de {loc.address or 'cette adresse'} (prix affichés = +5 à 10% vs prix de transaction réel). La moyenne d'arrondissement ({arr_avg}€/m²) n'est PAS une référence valide à Paris — les écarts intra-arrondissement peuvent dépasser 50%."
     return resp
@@ -977,16 +1099,23 @@ async def recalculate_valuation(req: RecalculateRequest):
     surface = chars.get("surface_carrez", 70)
     postal = loc.get("postal_code", "75001")
 
+    target_street = _extract_street_from_user_address(loc.get("address", ""))
+
     # Re-fetch DVF with exclusions
-    included, excluded, radius = await fetch_dvf_progressive(
+    included, excluded, radius, cstats, sc, scd = await fetch_dvf_progressive(
         lat, lon, target_surface=surface, postal_code=postal,
+        target_street=target_street,
         min_comps=5, excluded_ids=req.excluded_comparable_ids,
     )
 
     if not included:
         raise HTTPException(status_code=400, detail="Plus aucun comparable valide après exclusion")
 
-    new_median = weighted_median_price(included)
+    new_raw_median = weighted_median_price(included)
+    if sc != 1.0 and abs(sc - 1.0) > 0.05:
+        new_median = round(new_raw_median * sc)
+    else:
+        new_median = new_raw_median
     arr_avg = ARRONDISSEMENT_AVG_PRICES.get(postal, 10500)
     pct_adj = doc.get("market_data", {}).get("adjustment_pct", 0)
     flat_adj = doc.get("market_data", {}).get("adjustment_flat", 0)
@@ -1007,6 +1136,8 @@ async def recalculate_valuation(req: RecalculateRequest):
         "comparables_count": len(included),
         "excluded_count": len(excluded),
         "search_radius_m": radius,
+        "circle_stats": cstats,
+        "street_coefficient": {"value": sc, "detail": scd},
         "comparables": [_clean(c) for c in included[:25]],
         "excluded_comparables": [_clean(c) for c in excluded[:20]],
     }
@@ -1347,24 +1478,30 @@ ANALYSIS_PROMPT_TEMPLATE = """Tu es un expert en valorisation immobilière paris
 Le prix demandé est de {asking_price}€ pour {surface}m² soit {price_sqm}€/m².
 
 DONNÉES DE MARCHÉ LOCALES (transactions DVF réelles, 24 derniers mois uniquement, filtrées):
-- Médiane pondérée (distance+fraîcheur+similarité) dans un rayon de {search_radius}m : {local_median}€/m²
-- Nombre de transactions comparables retenues : {num_comparables}
-- Nombre de transactions exclues (anomalies/outliers) : {num_excluded}
-- Moyenne de l'arrondissement : {arr_avg}€/m² (ATTENTION: cette moyenne n'est PAS une référence fiable — les écarts intra-arrondissement peuvent dépasser 50% à Paris)
-- Prime de micro-localisation : {local_premium}% vs arrondissement
+- Médiane pondérée locale (distance+fraîcheur+similarité) dans un rayon de {search_radius}m : {local_median}€/m²
+- Comparables retenus : {num_comparables} (exclus : {num_excluded})
+- Répartition cercles : C1 (même rue)={c1_count}, C2 (même type 200m)={c2_count}, C3 (élargi)={c3_count}
+- Fiabilité : {reliability}
+- Coefficient de rue : {street_coeff} — {street_coeff_detail}
+- Moy. arrondissement : {arr_avg}€/m² (PAS une référence — écarts intra-arrondissement > 50% à Paris)
+- Prime micro-localisation : {local_premium}% vs arrondissement
 
-IMPORTANT: Base-toi PRINCIPALEMENT sur la médiane locale DVF ({local_median}€/m²), PAS la moyenne d'arrondissement.
+IMPORTANT: Base-toi EXCLUSIVEMENT sur la médiane locale DVF ({local_median}€/m²), corrigée par le coefficient de rue si applicable.
 
-RÈGLE DU VERDICT (OBLIGATOIRE):
-- Si l'écart entre le prix demandé/m² et la médiane locale est INFÉRIEUR à 10% → verdict = "prix_juste" (DANS LE MARCHÉ / PRIX COHÉRENT)
-- Si l'écart est entre 10% et 20% au-dessus → verdict = "surévalué"
-- Si l'écart est > 20% au-dessus → verdict = "très_surévalué"
-- Si le prix est > 15% EN-DESSOUS de la médiane → verdict = "sous-évalué" + AJOUTER un warning: "Une sous-évaluation > 15% est statistiquement rare sur le marché parisien et suggère des informations manquantes (vice caché, servitude, occupation, travaux lourds)"
+SEUILS DE VERDICT (OBLIGATOIRE):
+- Écart < 5% → "prix_juste" — "PRIX MARCHÉ — bien positionné"
+- 5-10% en-dessous → "prix_juste" — "LÉGÈREMENT SOUS LE MARCHÉ — marge de négociation limitée"
+- 5-10% au-dessus → "surévalué" — "LÉGÈREMENT AU-DESSUS DU MARCHÉ — négociable"
+- 10-15% → "surévalué" / "sous-évalué" — "vérifier les données"
+- > 15% → "très_surévalué" / "sous-évalué" — "ALERTE : écart anormal, vérification croisée obligatoire — ne PAS conclure à une opportunité sans vérification, l'explication la plus probable est une erreur de comparables ou des informations manquantes"
+
+Si fiabilité BASSE: ajouter un warning dans le verdict mentionnant que l'estimation est indicative.
 
 ANALYSE DE PRIX — Réponds en JSON UNIQUEMENT:
 {{
   "price_opinion": "sous-évalué" / "prix_juste" / "surévalué" / "très_surévalué",
   "price_opinion_icon": "--" / "-" / "=" / "+" / "++",
+  "price_opinion_detail": "description courte du verdict (ex: PRIX MARCHÉ, LÉGÈREMENT AU-DESSUS, ALERTE...)",
   "estimated_fair_price_low": estimation basse (nombre),
   "estimated_fair_price_high": estimation haute (nombre),
   "estimated_fair_price_sqm": estimation prix/m² juste (nombre),
@@ -1372,7 +1509,7 @@ ANALYSE DE PRIX — Réponds en JSON UNIQUEMENT:
   "arguments_against": ["3-5 arguments qui justifient un prix plus bas"],
   "negotiation_tips": ["2-3 conseils de négociation spécifiques à ce bien"],
   "undervaluation_warning": "string ou null — warning si sous-évaluation > 15%",
-  "verdict": "paragraphe de 4-5 lignes avec ton verdict argumenté basé EXCLUSIVEMENT sur la médiane locale DVF. Sois direct et factuel. Mentionne explicitement l'écart en % avec la médiane locale."
+  "verdict": "paragraphe de 4-5 lignes avec ton verdict argumenté basé EXCLUSIVEMENT sur la médiane locale DVF et le coefficient de rue. Mentionne l'écart en %. Si écart > 15%, dis EXPLICITEMENT que cela suggère soit une erreur de comparables soit des informations manquantes."
 }}"""
 
 @api_router.post("/listing/analyze")
@@ -1441,15 +1578,25 @@ async def analyze_listing(file: UploadFile = File(...)):
         search_radius = 0
         local_comparables = []
         local_excluded = []
+        local_circle_stats = {}
+        local_street_coeff = 1.0
+        local_street_coeff_detail = ""
         micro = {"local_premium_pct": 0}
+        target_street_name = ""
 
         if geo:
-            local_comparables, local_excluded, search_radius = await fetch_dvf_progressive(
+            target_street_name = _extract_street_from_user_address(geo.get("street", "") or address_text)
+            local_comparables, local_excluded, search_radius, local_circle_stats, local_street_coeff, local_street_coeff_detail = await fetch_dvf_progressive(
                 geo["latitude"], geo["longitude"],
-                target_surface=surface, postal_code=postal, min_comps=8,
+                target_surface=surface, postal_code=postal,
+                target_street=target_street_name, min_comps=8,
             )
             if local_comparables:
-                local_median = weighted_median_price(local_comparables)
+                raw_median = weighted_median_price(local_comparables)
+                if local_street_coeff != 1.0 and abs(local_street_coeff - 1.0) > 0.05:
+                    local_median = round(raw_median * local_street_coeff)
+                else:
+                    local_median = raw_median
                 micro = compute_micro_score(local_comparables, arr_avg)
                 if geo.get("postal_code"):
                     postal = geo["postal_code"]
@@ -1465,6 +1612,12 @@ async def analyze_listing(file: UploadFile = File(...)):
             search_radius=search_radius,
             num_comparables=len(local_comparables),
             num_excluded=len(local_excluded),
+            c1_count=local_circle_stats.get("circle_1_count", 0),
+            c2_count=local_circle_stats.get("circle_2_count", 0),
+            c3_count=local_circle_stats.get("circle_3_count", 0),
+            reliability=local_circle_stats.get("reliability", "BASSE"),
+            street_coeff=f"{local_street_coeff:.2f}",
+            street_coeff_detail=local_street_coeff_detail,
             local_premium=f"{micro.get('local_premium_pct', 0):+.1f}",
         )
 
@@ -1501,6 +1654,9 @@ async def analyze_listing(file: UploadFile = File(...)):
                 "postal_code": postal,
                 "asking_price_sqm": price_sqm,
                 "micro_score": micro,
+                "circle_stats": local_circle_stats,
+                "street_coefficient": local_street_coeff,
+                "street_coefficient_detail": local_street_coeff_detail,
             },
             "comparables": [_clean(c) for c in local_comparables[:15]],
             "excluded_comparables": [_clean(c) for c in local_excluded[:10]],

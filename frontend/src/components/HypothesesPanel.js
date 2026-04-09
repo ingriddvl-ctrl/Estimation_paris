@@ -173,6 +173,24 @@ export default function HypothesesPanel({ adjustments, marketData }) {
           </p>
         )}
 
+        {/* Reliability + Street Coefficient */}
+        {marketData?.reliability && (
+          <div className="mt-3 flex items-center gap-4 flex-wrap">
+            <span className={`inline-flex items-center px-2 py-1 text-xs font-mono font-bold rounded-sm ${
+              marketData.reliability === "HAUTE" ? "bg-green-50 text-[#008A00]" :
+              marketData.reliability === "MOYENNE" ? "bg-amber-50 text-[#F59E0B]" :
+              "bg-red-50 text-[#E60000]"
+            }`} data-testid="reliability-indicator">
+              Fiabilité {marketData.reliability.toLowerCase()}
+            </span>
+            {marketData.street_coefficient && marketData.street_coefficient !== 1.0 && (
+              <span className="text-xs font-mono text-zinc-500" data-testid="street-coeff-display">
+                {marketData.street_coefficient_detail}
+              </span>
+            )}
+          </div>
+        )}
+
         {/* Micro-score */}
         {marketData?.micro_score && marketData.micro_score.score > 0 && (
           <div className="mt-4 px-4 py-3 border border-zinc-200 bg-white flex items-center justify-between flex-wrap gap-3" data-testid="micro-score-panel">

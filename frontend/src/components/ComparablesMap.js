@@ -53,7 +53,28 @@ function RelevanceBar({ score }) {
   );
 }
 
-export default function ComparablesMap({ comparables, excludedComparables, center, estimatedPrice, searchRadius, valuationId, crossCalibrationWarning, onRecalculate }) {
+const CIRCLE_LABELS = {
+  1: { label: "C1", title: "Même rue", color: "#008A00", bg: "#f0fdf4" },
+  2: { label: "C2", title: "Même type 200m", color: "#2563EB", bg: "#eff6ff" },
+  3: { label: "C3", title: "Rayon élargi", color: "#71717A", bg: "#f4f4f5" },
+};
+
+const RELIABILITY_CONFIG = {
+  "HAUTE": { color: "#008A00", bg: "#f0fdf4", label: "Fiabilité haute" },
+  "MOYENNE": { color: "#F59E0B", bg: "#fffbeb", label: "Fiabilité moyenne" },
+  "BASSE": { color: "#E60000", bg: "#fef2f2", label: "Fiabilité basse — estimation indicative" },
+};
+
+function CircleBadge({ circle }) {
+  const cfg = CIRCLE_LABELS[circle] || CIRCLE_LABELS[3];
+  return (
+    <span className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-mono font-bold rounded-sm" style={{ color: cfg.color, backgroundColor: cfg.bg }} title={cfg.title}>
+      {cfg.label}
+    </span>
+  );
+}
+
+export default function ComparablesMap({ comparables, excludedComparables, center, estimatedPrice, searchRadius, valuationId, crossCalibrationWarning, circleStats, streetCoefficient, onRecalculate }) {
   const [excludedIds, setExcludedIds] = useState(new Set());
   const [recalculating, setRecalculating] = useState(false);
   const [showExcluded, setShowExcluded] = useState(false);
@@ -110,8 +131,40 @@ export default function ComparablesMap({ comparables, excludedComparables, cente
         <div>
           <p className="text-xs uppercase tracking-[0.2em] text-zinc-400 font-mono mb-1">Carte des comparables DVF</p>
           <p className="text-sm text-zinc-500">
-            {activeComps.length} transactions retenues{activeExcluded.length > 0 && `, ${activeExcluded.length} exclues`} — rayon {radiusM}m — 24 mois max
+            {activeComps.length} retenues{activeExcluded.length > 0 && `, ${activeExcluded.length} exclues`} — rayon {radiusM}m — 24 mois max
           </p>
+          {/* Circle stats + reliability */}
+          {(circleStats || recalcResult?.circle_stats) && (
+            <div className="flex items-center gap-3 mt-2 flex-wrap" data-testid="circle-stats">
+              {(() => {
+                const cs = recalcResult?.circle_stats || circleStats || {};
+                const rel = cs.reliability || "BASSE";
+                const relCfg = RELIABILITY_CONFIG[rel] || RELIABILITY_CONFIG["BASSE"];
+                return (
+                  <>
+                    <span className="inline-flex items-center gap-1 text-xs px-2 py-1 font-mono font-bold" style={{ color: relCfg.color, backgroundColor: relCfg.bg }} data-testid="reliability-badge">
+                      {relCfg.label}
+                    </span>
+                    {cs.circle_1_count > 0 && <span className="text-xs font-mono text-[#008A00]">C1: {cs.circle_1_count}</span>}
+                    {cs.circle_2_count > 0 && <span className="text-xs font-mono text-[#2563EB]">C2: {cs.circle_2_count}</span>}
+                    {cs.circle_3_count > 0 && <span className="text-xs font-mono text-zinc-500">C3: {cs.circle_3_count}</span>}
+                  </>
+                );
+              })()}
+            </div>
+          )}
+          {/* Street coefficient */}
+          {(streetCoefficient || recalcResult?.street_coefficient) && (() => {
+            const sc = recalcResult?.street_coefficient || streetCoefficient || {};
+            if (sc.value && sc.value !== 1.0) {
+              return (
+                <p className="text-xs font-mono text-zinc-500 mt-1" data-testid="street-coefficient">
+                  {sc.detail}
+                </p>
+              );
+            }
+            return null;
+          })()}
           {recalcResult && (
             <p className="text-sm font-mono font-bold mt-1" data-testid="recalc-result">
               Nouvelle base DVF : {formatPrice(recalcResult.new_base_price_sqm)} €/m² →{" "}
@@ -207,12 +260,12 @@ export default function ComparablesMap({ comparables, excludedComparables, cente
               <thead>
                 <tr className="border-b border-zinc-200">
                   <th className="w-8 px-2 py-2"></th>
+                  <th className="px-2 py-2 text-xs font-mono text-zinc-400 text-center">C.</th>
                   <th className="text-left px-3 py-2 text-xs font-mono text-zinc-400">Adresse</th>
                   <th className="text-right px-3 py-2 text-xs font-mono text-zinc-400">Dist.</th>
                   <th className="text-right px-3 py-2 text-xs font-mono text-zinc-400">Date</th>
                   <th className="text-right px-3 py-2 text-xs font-mono text-zinc-400">Surface</th>
                   <th className="text-right px-3 py-2 text-xs font-mono text-zinc-400">Pièces</th>
-                  <th className="text-right px-3 py-2 text-xs font-mono text-zinc-400">Prix</th>
                   <th className="text-right px-3 py-2 text-xs font-mono text-zinc-400">€/m²</th>
                   <th className="text-center px-3 py-2 text-xs font-mono text-zinc-400">Score</th>
                 </tr>
@@ -230,12 +283,14 @@ export default function ComparablesMap({ comparables, excludedComparables, cente
                       <td className="px-2 py-2 text-center">
                         {isExcl ? <EyeOff className="w-3.5 h-3.5 text-zinc-400 mx-auto" /> : <Eye className="w-3.5 h-3.5 text-zinc-300 mx-auto" />}
                       </td>
+                      <td className="px-2 py-2 text-center">
+                        {c.circle ? <CircleBadge circle={c.circle} /> : <span className="text-xs text-zinc-300">—</span>}
+                      </td>
                       <td className="px-3 py-2 text-sm max-w-[200px] truncate">{c.address}</td>
                       <td className="px-3 py-2 text-sm text-right font-mono text-zinc-500">{c.distance_m}m</td>
                       <td className="px-3 py-2 text-sm text-right font-mono text-zinc-500">{String(c.date).slice(0, 10)}</td>
                       <td className="px-3 py-2 text-sm text-right font-mono">{c.surface?.toFixed(0)} m²</td>
                       <td className="px-3 py-2 text-sm text-right font-mono text-zinc-500">{c.rooms || "?"}</td>
-                      <td className="px-3 py-2 text-sm text-right font-mono">{formatPrice(c.price)} €</td>
                       <td className="px-3 py-2 text-sm text-right font-mono font-medium" style={{ color: getColor(c.price_per_sqm) }}>
                         {formatPrice(c.price_per_sqm)} €
                       </td>
