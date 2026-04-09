@@ -8,13 +8,36 @@ Application web complète pour estimer le prix d'achat d'appartements à Paris (
 - **Backend**: FastAPI + MongoDB + ReportLab (PDF)
 - **Intégrations**: DVF Cerema API, Géorisques API, Gemini 2.5 Flash (emergentintegrations)
 
-## Modèle de Valorisation — RÉSOLUTION SPATIALE (RÈGLE ABSOLUE)
+## Modèle de Valorisation — RÈGLES CRITIQUES
+
+### RÉSOLUTION SPATIALE (RÈGLE ABSOLUE)
 Le modèle ne doit JAMAIS utiliser un prix moyen d'arrondissement comme point de départ.
-Le point de départ est TOUJOURS les transactions DVF réelles pondérées par:
-- **Distance** : 1/(1+d/200) — les transactions proches pèsent plus
-- **Fraîcheur** : les transactions récentes pèsent plus (2025=0.95, 2024=0.85, etc.)
-- **Rayon progressif** : 200m → 300m → 500m → 800m (élargir uniquement si < 10 comparables)
-- **Micro-score** : calcul automatique du premium/décote de micro-localisation vs arrondissement
+Le point de départ est TOUJOURS les transactions DVF réelles pondérées.
+
+### FRAÎCHEUR DES DONNÉES (RÈGLE ABSOLUE)
+- Max 24 mois. Jamais au-delà.
+- Pondération : 3 mois=1.0, 12 mois=0.7, 24 mois=0.4, >24 mois=exclusion
+- anneemut_min=2024 dans l'appel API Cerema
+
+### FILTRAGE DES ANOMALIES (NETTOYAGE OBLIGATOIRE)
+- Prix/m² < 5 000 € ou > 20 000 € exclus (25 000 pour 6e/7e/8e arrondissements)
+- Surface < 20 m² exclue (chambres de service)
+- Surface > 200% ou < 50% de la surface cible exclue
+- Doublons parcelle/date/prix exclus (lots en bloc, VEFA)
+- Outliers > 2σ de la médiane exclus
+
+### SEGMENTATION PAR TYPE
+- Surface ±30% = poids 1.0, ±30-50% = poids 0.5, au-delà = exclusion
+
+### RÈGLE DU VERDICT
+- Écart < 10% → "PRIX JUSTE / DANS LE MARCHÉ"
+- 10-20% au-dessus → "SURÉVALUÉ"
+- > 20% au-dessus → "TRÈS SURÉVALUÉ"
+- > 15% en-dessous → "SOUS-ÉVALUÉ" + warning automatique
+
+### CALIBRATION CROISÉE
+Warning incitant l'utilisateur à vérifier sur SeLoger, LeBonCoin, MeilleursAgents.
+La moyenne d'arrondissement n'est PAS une référence valide.
 
 ## Fonctionnalités Implémentées
 
@@ -31,41 +54,47 @@ Le point de départ est TOUJOURS les transactions DVF réelles pondérées par:
 - Simulateur d'achat
 
 ### Résolution Spatiale Fine (Done - 09/04/2026)
-- Recherche DVF progressive 200m→300m→500m→800m
-- Médiane pondérée distance + fraîcheur (jamais de moyenne arrondissement comme base)
-- Micro-score de localisation (premium vs arrondissement, densité 300m, homogénéité prix)
-- Carte de chaleur (heatmap) sur la carte des comparables
-- Cercle de rayon de recherche affiché sur la carte
-- Distance (en mètres) affichée pour chaque comparable
+- Recherche DVF progressive 200m→300m→500m
+- Médiane pondérée distance + fraîcheur + similarité surface
+- Micro-score de localisation
+- Carte de chaleur (heatmap) + cercle de rayon
+
+### Filtrage Strict DVF (Done - 09/04/2026)
+- 24 mois max (pondération dégressive 3mo=1.0 → 24mo=0.4)
+- Filtrage anomalies (prix, surface, doublons, outliers 2σ)
+- Segmentation par surface (±30%=1.0, ±50%=0.5, au-delà=exclusion)
+- Score de pertinence 0-100 pour chaque comparable (distance 40%, fraîcheur 35%, similarité 25%)
+- Raisons d'exclusion transparentes pour chaque transaction rejetée
+- Cross-calibration warning (SeLoger, LeBonCoin, MeilleursAgents)
+
+### Exclusion Manuelle + Recalcul Temps Réel (Done - 09/04/2026)
+- Clic sur une ligne pour exclure un comparable
+- Endpoint POST /api/valuation/recalculate
+- Nouveau prix recalculé instantanément affiché
+- Bouton réinitialiser pour annuler les exclusions
 
 ### Listing Analyzer (Done - 09/04/2026)
-- Upload de fiches d'agence (PDF/images)
-- Extraction automatique via Gemini 2.5 Flash
-- Géocodage de l'adresse extraite → recherche DVF locale (pas la moyenne arrondissement)
-- Analyse IA avec données DVF locales comme référence
-- Affichage des comparables DVF dans l'analyse
+- Upload fiches d'agence (PDF/images) + extraction IA (Gemini 2.5 Flash)
+- Géocodage adresse → DVF local comme référence
+- Analyse IA avec règle du verdict ±10%
 - Export PDF de l'analyse
-- Sauvegarde en MongoDB pour réutilisation
 
 ### PDF Report Generation (Done - 09/04/2026)
 - Rapport estimation : 4 pages (couverture, décomposition, comparables, méthodologie)
-- Rapport analyse listing : verdict, arguments, comparables DVF, caractéristiques extraites
+- Rapport analyse listing : verdict, arguments, comparables DVF
 - Endpoints: GET /api/report/pdf/{id} et GET /api/listing/report/pdf/{id}
 
 ## Backlog
 
+### P1
+- Entraîner un modèle XGBoost/LightGBM sur l'ensemble DVF Paris pour gradients infra-quartier
+- Micro-score de rue (bruit, ensoleillement, largeur, commerces)
+
 ### P2
 - Mode comparaison (jusqu'à 3 biens côte à côte)
 - Compléter le Simulateur (détail frais notaire, courtier, assurance)
-- Entraîner un modèle XGBoost/LightGBM sur l'ensemble DVF Paris pour gradients infra-quartier
 
 ### P3
 - Cache DVF Cerema pour pallier les erreurs 503
-- Micro-score de rue (bruit, ensoleillement, largeur, commerces)
 - Résidu de prestige par voie
-
-## Contraintes
-- Estimations conservatrices (plafonnement max_cumulative_pct à 18%)
-- Langue: Français uniquement
-- Toutes les API préfixées /api
-- Base prix = TOUJOURS médiane pondérée DVF locale, JAMAIS moyenne arrondissement
+- Intégration API SeLoger/LeBonCoin pour calibration croisée automatique
