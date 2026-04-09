@@ -110,7 +110,9 @@ export default function HypothesesPanel({ adjustments, marketData }) {
   const positiveCount = adjustments.filter(a => a.value > 0).length;
   const negativeCount = adjustments.filter(a => a.value < 0).length;
 
-  // Calculate difference vs arrondissement average
+  const zoneLabel = marketData?.zone_label || (marketData?.arrondissement?.startsWith("75") ? `${marketData?.arrondissement?.slice(-2) || "?"}e arrondissement` : marketData?.arrondissement || "zone");
+
+  // Calculate difference vs zone average
   const finalPriceSqm = Math.round(basePrice * (1 + totalPct / 100));
   const diffVsArr = finalPriceSqm - arrAvg;
   const diffPct = arrAvg > 0 ? ((diffVsArr / arrAvg) * 100).toFixed(1) : 0;
@@ -123,10 +125,10 @@ export default function HypothesesPanel({ adjustments, marketData }) {
           <div>
             <p className="text-xs uppercase tracking-[0.2em] text-zinc-400 font-mono mb-2">Pourquoi ce prix ?</p>
             <h3 className="font-heading font-bold text-lg tracking-tight mb-1">
-              Ce bien est estimé {diffVsArr >= 0 ? "au-dessus" : "en-dessous"} de la moyenne de l'arrondissement
+              Ce bien est estimé {diffVsArr >= 0 ? "au-dessus" : "en-dessous"} de la moyenne ({zoneLabel})
             </h3>
             <p className="text-sm text-zinc-500 leading-relaxed max-w-2xl">
-              Le prix médian au m² dans le {marketData?.arrondissement?.slice(-2) || "?"}e arrondissement est de <strong className="font-mono">{formatPrice(arrAvg)} €/m²</strong>.
+              Le prix médian au m² pour {zoneLabel} est de <strong className="font-mono">{formatPrice(arrAvg)} €/m²</strong>.
               Votre bien est estimé à <strong className="font-mono">{formatPrice(finalPriceSqm)} €/m²</strong>, 
               soit <span className={`font-mono font-semibold ${diffVsArr >= 0 ? "text-[#008A00]" : "text-[#E60000]"}`}>
                 {diffVsArr >= 0 ? "+" : ""}{diffPct}%

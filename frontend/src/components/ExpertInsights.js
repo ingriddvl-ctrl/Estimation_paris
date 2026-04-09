@@ -58,10 +58,10 @@ export default function ExpertInsights({ data }) {
     const chargesPerSqm = annualCharges / surface;
     const chargesMonthly = Math.round(annualCharges / 12);
     let chargesSentiment = "neutral";
-    let chargesComment = "Charges dans la moyenne parisienne.";
+    let chargesComment = "Charges dans la moyenne de la zone.";
     if (chargesPerSqm > 50) {
       chargesSentiment = "warning";
-      chargesComment = `Charges élevées (${chargesPerSqm.toFixed(0)}€/m²/an). Vérifier : chauffage collectif, gardien, ascenseur, travaux votés. La moyenne parisienne est autour de 30-40€/m²/an.`;
+      chargesComment = `Charges élevées (${chargesPerSqm.toFixed(0)}€/m²/an). Vérifier : chauffage collectif, gardien, ascenseur, travaux votés. La moyenne en région parisienne est autour de 30-40€/m²/an.`;
     } else if (chargesPerSqm > 35) {
       chargesComment = `Charges dans la fourchette haute (${chargesPerSqm.toFixed(0)}€/m²/an). Acceptable si l'immeuble a un gardien et/ou un chauffage collectif.`;
     } else if (chargesPerSqm < 20) {

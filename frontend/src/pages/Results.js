@@ -174,7 +174,7 @@ export default function Results() {
           </TabsContent>
 
           <TabsContent value="marche" className="mt-6" data-testid="tab-content-marche">
-            <MarketPosition position={data.market_data?.market_position} surface={chars.surface_carrez} totalPrice={data.price_median} />
+            <MarketPosition position={data.market_data?.market_position} surface={chars.surface_carrez} totalPrice={data.price_median} marketData={data.market_data} />
             <div className="mt-8">
               <MarketListings lat={loc.latitude} lon={loc.longitude} estimatedPriceSqm={data.price_per_sqm_median} />
             </div>

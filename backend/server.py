@@ -34,7 +34,7 @@ class PropertyLocation(BaseModel):
     street_number: str = ""
     street_name: str = ""
     postal_code: str = ""
-    city: str = "Paris"
+    city: str = ""
     arrondissement: str = ""
     floor: int = 0
     position: str = "sur_rue"
@@ -191,7 +191,16 @@ async def get_algorithm_config() -> AlgorithmConfig:
 @api_router.get("/address/search")
 async def search_address(q: str = Query(..., min_length=3)):
     async with httpx.AsyncClient(timeout=10) as client_http:
-        params = {"q": q + " Paris", "limit": 8}
+        # Don't force "Paris" — allow petite couronne. Use Île-de-France region filter.
+        query = q
+        # If no city/postal hint in query, bias toward Paris region
+        has_location_hint = any(kw in q.lower() for kw in ["paris", "neuilly", "boulogne", "clichy",
+            "levallois", "issy", "montrouge", "puteaux", "courbevoie", "nanterre", "colombes",
+            "montreuil", "saint-denis", "pantin", "vincennes", "saint-mandé", "ivry", "créteil",
+            "92", "93", "94", "75"])
+        if not has_location_hint:
+            query = q + " Île-de-France"
+        params = {"q": query, "limit": 8}
         resp = await client_http.get(
             "https://api-adresse.data.gouv.fr/search/",
             params=params
@@ -202,12 +211,16 @@ async def search_address(q: str = Query(..., min_length=3)):
             for f in data.get("features", []):
                 props = f.get("properties", {})
                 coords = f.get("geometry", {}).get("coordinates", [0, 0])
+                postcode = props.get("postcode", "")
+                # Filter: only Paris (75) + petite couronne (92, 93, 94)
+                if postcode and not postcode.startswith(("75", "92", "93", "94")):
+                    continue
                 results.append({
                     "label": props.get("label", ""),
                     "street_number": props.get("housenumber", ""),
                     "street_name": props.get("street", ""),
-                    "postal_code": props.get("postcode", ""),
-                    "city": props.get("city", "Paris"),
+                    "postal_code": postcode,
+                    "city": props.get("city", ""),
                     "longitude": coords[0],
                     "latitude": coords[1],
                     "context": props.get("context", "")
@@ -292,30 +305,85 @@ async def get_geo_risks(lat: float = Query(...), lon: float = Query(...)):
 
 # ─── Valuation Engine ───
 
-# Average price/m² by arrondissement (source: DVF 2023-2024 medians, updated periodically)
-ARRONDISSEMENT_AVG_PRICES = {
+# Average price/m² by zone (source: DVF 2023-2024 medians)
+# Paris intramuros + Petite Couronne (92, 93, 94)
+ZONE_AVG_PRICES = {
+    # Paris intramuros
     "75001": 12800, "75002": 11900, "75003": 12100, "75004": 13200,
     "75005": 12500, "75006": 14800, "75007": 14200, "75008": 12600,
     "75009": 11200, "75010": 10400, "75011": 10600, "75012": 9800,
     "75013": 9500, "75014": 10200, "75015": 10000, "75016": 11500,
     "75017": 10800, "75018": 9600, "75019": 8500, "75020": 8800,
+    # Hauts-de-Seine (92)
+    "92200": 9500, "92100": 8200, "92300": 8500, "92130": 7500,
+    "92120": 7200, "92170": 7400, "92240": 6800, "92800": 6800,
+    "92400": 6500, "92000": 5500, "92500": 6200, "92600": 6500,
+    "92110": 6200, "92700": 5500, "92320": 6200, "92140": 6800,
+    "92150": 7000, "92210": 7500, "92310": 6500, "92330": 6800,
+    "92350": 5800, "92160": 6200, "92340": 6000, "92260": 5800,
+    "92190": 6500, "92360": 5500,
+    # Seine-Saint-Denis (93)
+    "93100": 6200, "93200": 4800, "93400": 5800, "93300": 4200,
+    "93500": 5500, "93170": 5500, "93310": 5000, "93260": 5200,
+    "93110": 4800, "93250": 4200, "93150": 4500, "93140": 4600,
+    "93000": 4600, "93700": 4800,
+    # Val-de-Marne (94)
+    "94300": 8200, "94160": 8800, "94220": 7500, "94200": 5800,
+    "94270": 6500, "94250": 5800, "94240": 6000, "94120": 5500,
+    "94130": 6500, "94100": 6200, "94000": 4500, "94400": 5200,
+    "94800": 5500, "94700": 5800, "94340": 5200, "94170": 5500,
 }
+ARRONDISSEMENT_AVG_PRICES = ZONE_AVG_PRICES
+
+_COMMUNE_NAMES = {
+    "92200": "Neuilly-sur-Seine", "92100": "Boulogne-Billancourt", "92300": "Levallois-Perret",
+    "92130": "Issy-les-Moulineaux", "92120": "Montrouge", "92170": "Vanves", "92240": "Malakoff",
+    "92800": "Puteaux", "92400": "Courbevoie", "92000": "Nanterre", "92500": "Rueil-Malmaison",
+    "92600": "Asnières-sur-Seine", "92110": "Clichy", "92700": "Colombes", "92320": "Châtillon",
+    "92140": "Clamart", "92150": "Suresnes", "92210": "Saint-Cloud", "92310": "Sèvres",
+    "92330": "Sceaux", "92350": "Le Plessis-Robinson", "92160": "Antony", "92340": "Bourg-la-Reine",
+    "92260": "Fontenay-aux-Roses", "92190": "Meudon", "92360": "Meudon-la-Forêt",
+    "93100": "Montreuil", "93200": "Saint-Denis", "93400": "Saint-Ouen-sur-Seine",
+    "93300": "Aubervilliers", "93500": "Pantin", "93170": "Bagnolet", "93310": "Le Pré-Saint-Gervais",
+    "93260": "Les Lilas", "93110": "Rosny-sous-Bois", "93250": "Villemomble",
+    "93150": "Le Blanc-Mesnil", "93140": "Bondy", "93000": "Bobigny", "93700": "Drancy",
+    "94300": "Vincennes", "94160": "Saint-Mandé", "94220": "Charenton-le-Pont",
+    "94200": "Ivry-sur-Seine", "94270": "Le Kremlin-Bicêtre", "94250": "Gentilly",
+    "94240": "L'Haÿ-les-Roses", "94120": "Fontenay-sous-Bois", "94130": "Nogent-sur-Marne",
+    "94100": "Saint-Maur-des-Fossés", "94000": "Créteil", "94400": "Vitry-sur-Seine",
+    "94800": "Villejuif", "94700": "Maisons-Alfort", "94340": "Joinville-le-Pont",
+    "94170": "Le Perreux-sur-Marne",
+}
+
+def _is_paris_intramuros(postal_code: str) -> bool:
+    return postal_code.startswith("75") and len(postal_code) == 5
+
+def _zone_display_label(postal_code: str) -> str:
+    if _is_paris_intramuros(postal_code):
+        return f"{postal_code[-2:]}e arrondissement"
+    return _COMMUNE_NAMES.get(postal_code, postal_code)
 
 def get_arrondissement_zone(postal_code: str) -> str:
     central = ["75001", "75002", "75003", "75004", "75005", "75006", "75007"]
     intermediate = ["75008", "75009", "75010", "75011", "75012", "75014", "75015", "75016", "75017"]
+    premium_suburbs = ["92200", "92300", "94160", "92210"]
+    mid_suburbs = ["92100", "92130", "92120", "92170", "92150", "94300", "94220", "93260", "93310"]
     if postal_code in central:
         return "central"
-    elif postal_code in intermediate:
+    elif postal_code in intermediate or postal_code in premium_suburbs:
         return "intermediate"
+    elif postal_code in mid_suburbs:
+        return "intermediate"
+    elif postal_code.startswith(("92", "93", "94")):
+        return "peripheral"
     return "peripheral"
 
 # ─── Spatial Resolution Helpers ───
 
 import re as re_mod
 
-# Premium arrondissements with higher price/m² ceiling
-PREMIUM_ARRONDISSEMENTS = {"75006", "75007", "75008"}
+# Premium zones with higher price/m² ceiling
+PREMIUM_ARRONDISSEMENTS = {"75006", "75007", "75008", "92200", "94160"}
 
 def haversine_meters(lat1, lon1, lat2, lon2):
     """Distance in meters between two GPS points"""
@@ -337,9 +405,10 @@ def _normalize_street(raw):
     return s
 
 def _extract_street_from_user_address(addr):
-    """Extract street name from '22 Avenue de Lamballe 75016 Paris'."""
+    """Extract street name from '22 Avenue de Lamballe 75016 Paris' or '5 Rue du Bois 92200 Neuilly'."""
     s = str(addr).upper().strip()
-    s = re_mod.sub(r'\b750\d{2}\b.*', '', s).strip()
+    # Remove postal code + city suffix for Paris and petite couronne
+    s = re_mod.sub(r'\b(75|92|93|94)\d{3}\b.*', '', s).strip()
     s = re_mod.sub(r'^\d+[\s,]*', '', s).strip()
     return s
 
@@ -673,8 +742,9 @@ async def fetch_dvf_progressive(lat, lon, target_surface=70, postal_code="75001"
     sc, scd = _compute_street_coefficient(included, target_street)
     return included, excluded, radii[-1], circle_stats, sc, scd
 
-def compute_micro_score(comparables, arr_avg):
+def compute_micro_score(comparables, arr_avg, postal_code=""):
     """Compute micro-location score from local DVF data"""
+    zone_label = "la zone" if not postal_code else _zone_display_label(postal_code)
     if not comparables:
         return {"score": 50, "detail": "Données DVF insuffisantes pour scorer", "local_premium_pct": 0, "density_300m": 0, "price_homogeneity": 50, "local_median_sqm": 0}
     local_median = weighted_median_price(comparables)
@@ -690,11 +760,11 @@ def compute_micro_score(comparables, arr_avg):
     score = max(10, min(100, score))
     parts = []
     if premium_pct > 5:
-        parts.append(f"Micro-localisation premium (+{premium_pct:.0f}% vs arrondissement)")
+        parts.append(f"Micro-localisation premium (+{premium_pct:.0f}% vs moyenne {zone_label})")
     elif premium_pct < -5:
-        parts.append(f"Micro-localisation en retrait ({premium_pct:.0f}% vs arrondissement)")
+        parts.append(f"Micro-localisation en retrait ({premium_pct:.0f}% vs moyenne {zone_label})")
     else:
-        parts.append("Micro-localisation dans la moyenne de l'arrondissement")
+        parts.append(f"Micro-localisation dans la moyenne ({zone_label})")
     parts.append(f"{density} transaction(s) à moins de 300m")
     return {
         "score": score,
@@ -793,11 +863,11 @@ async def estimate_valuation(req: ValuationRequest):
     floor_adj, floor_label = compute_floor_adjustment(loc.floor, bldg.elevator, config)
     if floor_adj != 0:
         if loc.floor == 0:
-            hyp = f"Le rez-de-chaussée subit une décote de {abs(floor_adj)}% car il est exposé au bruit de la rue, au manque de luminosité et aux problèmes de sécurité. À Paris, les RDC se vendent en moyenne 10 à 15% moins cher que les étages intermédiaires."
+            hyp = f"Le rez-de-chaussée subit une décote de {abs(floor_adj)}% car il est exposé au bruit de la rue, au manque de luminosité et aux problèmes de sécurité. Les RDC se vendent en moyenne 10 à 15% moins cher que les étages intermédiaires."
         elif loc.floor >= 6 and not bldg.elevator:
             hyp = f"Un {loc.floor}e étage sans ascenseur entraîne une forte décote ({abs(floor_adj)}%) car l'accessibilité réduit considérablement le bassin d'acheteurs potentiels (familles, personnes âgées). Chaque étage supplémentaire sans ascenseur au-delà du 4e amplifie la décote."
         elif loc.floor >= 6 and bldg.elevator:
-            hyp = f"Le dernier étage avec ascenseur bénéficie d'une surcote de +{floor_adj}% : vue dégagée sur les toits, calme supérieur, moins de nuisances sonores des voisins du dessus. C'est un des critères les plus valorisés à Paris."
+            hyp = f"Le dernier étage avec ascenseur bénéficie d'une surcote de +{floor_adj}% : vue dégagée, calme supérieur, moins de nuisances sonores des voisins du dessus. C'est un des critères les plus valorisés en région parisienne."
         elif bldg.elevator and floor_adj > 0:
             hyp = f"L'étage {loc.floor} avec ascenseur bénéficie d'une surcote de +{floor_adj:.1f}% par rapport aux étages bas. Plus on monte avec ascenseur, plus la luminosité, le calme et la vue s'améliorent. Le bonus est de +{config.floor_per_level_elevator}% par étage au-delà du 3e."
         else:
@@ -813,7 +883,7 @@ async def estimate_valuation(req: ValuationRequest):
         total_pct_adjustment += adj
     elif chars.exposure == "nord":
         adj = config.north_mono
-        hyp = f"Une exposition nord mono-orientée entraîne une décote de {abs(adj)}% car le bien reçoit très peu de lumière directe. Les acheteurs parisiens sont particulièrement sensibles à la luminosité, surtout dans les rues étroites. Cela se traduit aussi par des charges de chauffage plus élevées."
+        hyp = f"Une exposition nord mono-orientée entraîne une décote de {abs(adj)}% car le bien reçoit très peu de lumière directe. Les acheteurs sont particulièrement sensibles à la luminosité, surtout dans les rues étroites. Cela se traduit aussi par des charges de chauffage plus élevées."
         adjustments.append({"name": "Exposition", "value": adj, "type": "pct", "detail": "Exposition nord : décote", "hypothesis": hyp})
         total_pct_adjustment += adj
 
@@ -854,7 +924,7 @@ async def estimate_valuation(req: ValuationRequest):
         total_pct_adjustment += adj
     elif chars.exterior_type == "jardin" and chars.exterior_surface > 0:
         adj = config.garden_pct
-        hyp = f"Un jardin privatif de {chars.exterior_surface}m² à Paris est exceptionnel et apporte +{adj}%. C'est l'un des biens les plus recherchés du marché parisien. La rareté de l'offre (< 2% des biens) crée une prime significative, surtout dans les arrondissements centraux."
+        hyp = f"Un jardin privatif de {chars.exterior_surface}m² est exceptionnel et apporte +{adj}%. C'est l'un des biens les plus recherchés du marché. La rareté de l'offre (< 2% des biens) crée une prime significative, surtout dans les zones centrales."
         adjustments.append({"name": "Jardin privatif", "value": adj, "type": "pct", "detail": f"Jardin {chars.exterior_surface}m²", "hypothesis": hyp})
         total_pct_adjustment += adj
 
@@ -937,7 +1007,7 @@ async def estimate_valuation(req: ValuationRequest):
     if chars.parking != "aucun":
         parking_val = {"central": config.parking_central, "intermediate": config.parking_intermediate, "peripheral": config.parking_peripheral}
         p_adj = parking_val.get(zone, config.parking_peripheral)
-        hyp = f"Une place de stationnement en zone {zone} à Paris vaut environ {int(p_adj):,}€. Dans les arrondissements centraux, la rareté des places pousse les prix jusqu'à 50 000€. Un parking sécurise aussi le financement bancaire et facilite la revente. Le type '{chars.parking}' est intégré comme un montant forfaitaire ajouté au prix."
+        hyp = f"Une place de stationnement en zone {zone} vaut environ {int(p_adj):,}€. Dans les zones centrales, la rareté des places pousse les prix jusqu'à 50 000€. Un parking sécurise aussi le financement bancaire et facilite la revente. Le type '{chars.parking}' est intégré comme un montant forfaitaire ajouté au prix."
         adjustments.append({"name": "Parking", "value": p_adj, "type": "flat", "detail": f"Place de stationnement ({zone})", "hypothesis": hyp})
         total_flat_adjustment += p_adj
 
@@ -1030,7 +1100,10 @@ async def estimate_valuation(req: ValuationRequest):
         pass
 
     # Micro-location score
-    micro_score = compute_micro_score(comparables, arr_avg)
+    micro_score = compute_micro_score(comparables, arr_avg, postal_code=loc.postal_code)
+
+    zone_label = _zone_display_label(loc.postal_code)
+    is_paris = _is_paris_intramuros(loc.postal_code)
 
     # Strip internal fields from comparables for response
     def _clean_comp(c):
@@ -1054,12 +1127,14 @@ async def estimate_valuation(req: ValuationRequest):
             "arrondissement_avg_sqm": arr_avg,
             "arrondissement": loc.postal_code,
             "zone": zone,
+            "zone_label": zone_label,
+            "is_paris": is_paris,
             "total_comparables": len(comparables),
             "total_excluded": len(excluded_comparables),
             "search_radius_m": search_radius,
             "adjustment_pct": round(total_pct_adjustment, 1),
             "adjustment_flat": round(total_flat_adjustment),
-            "base_source": f"DVF Cerema — médiane pondérée ({search_radius}m, 24 mois max, filtré)" if comparables else "Moyenne arrondissement (fallback — aucune transaction DVF trouvée)",
+            "base_source": f"DVF Cerema — médiane pondérée ({search_radius}m, 24 mois max, filtré)" if comparables else f"Moyenne {zone_label} (fallback — aucune transaction DVF trouvée)",
             "comparables_period": "24 derniers mois",
             "market_position": market_position,
             "micro_score": micro_score,
@@ -1075,7 +1150,7 @@ async def estimate_valuation(req: ValuationRequest):
     resp["circle_stats"] = circle_stats
     resp["street_coefficient"] = {"value": street_coeff, "detail": street_coeff_detail}
     # Cross-calibration warning
-    resp["cross_calibration_warning"] = f"Vérifiez la cohérence de l'estimation avec les annonces en cours sur SeLoger/LeBonCoin autour de {loc.address or 'cette adresse'} (prix affichés = +5 à 10% vs prix de transaction réel). La moyenne d'arrondissement ({arr_avg}€/m²) n'est PAS une référence valide à Paris — les écarts intra-arrondissement peuvent dépasser 50%."
+    resp["cross_calibration_warning"] = f"Vérifiez la cohérence de l'estimation avec les annonces en cours sur SeLoger/LeBonCoin autour de {loc.address or 'cette adresse'} (prix affichés = +5 à 10% vs prix de transaction réel). La moyenne de la zone ({arr_avg}€/m² pour {zone_label}) n'est PAS une référence valide — les écarts intra-zone peuvent dépasser 50%."
     return resp
 
 # ─── Recalculate with manual exclusions ───
@@ -1414,7 +1489,7 @@ async def get_market_listings(
 
 # ─── Listing Sheet Analysis (AI-powered) ───
 
-EXTRACTION_PROMPT = """Tu es un expert en immobilier parisien. Analyse cette fiche d'agence immobilière et extrais TOUTES les informations disponibles dans un JSON structuré.
+EXTRACTION_PROMPT = """Tu es un expert en immobilier dans la région parisienne (Paris + petite couronne). Analyse cette fiche d'agence immobilière et extrais TOUTES les informations disponibles dans un JSON structuré.
 
 IMPORTANT: 
 - Extrais EXACTEMENT ce qui est écrit, sans inventer de données
@@ -1426,8 +1501,8 @@ Retourne UNIQUEMENT un JSON valide avec cette structure (pas de texte avant ou a
 {
   "extracted": {
     "address": "adresse complète ou null",
-    "postal_code": "code postal",
-    "arrondissement": "numéro d'arrondissement",
+    "postal_code": "code postal (75xxx, 92xxx, 93xxx, 94xxx)",
+    "arrondissement": "numéro d'arrondissement (Paris) ou nom de commune (banlieue)",
     "neighborhood": "quartier mentionné ou null",
     "asking_price": prix demandé en euros (nombre),
     "asking_price_detail": "détail (HAI, hors honoraires, etc.)",
@@ -1483,7 +1558,7 @@ DONNÉES DE MARCHÉ LOCALES (transactions DVF réelles, 24 derniers mois uniquem
 - Répartition cercles : C1 (même rue)={c1_count}, C2 (même type 200m)={c2_count}, C3 (élargi)={c3_count}
 - Fiabilité : {reliability}
 - Coefficient de rue : {street_coeff} — {street_coeff_detail}
-- Moy. arrondissement : {arr_avg}€/m² (PAS une référence — écarts intra-arrondissement > 50% à Paris)
+- Moy. zone : {arr_avg}€/m² (PAS une référence — écarts intra-zone > 50%)
 - Prime micro-localisation : {local_premium}% vs arrondissement
 
 IMPORTANT: Base-toi EXCLUSIVEMENT sur la médiane locale DVF ({local_median}€/m²), corrigée par le coefficient de rue si applicable.
@@ -1543,7 +1618,7 @@ async def analyze_listing(file: UploadFile = File(...)):
         chat = LlmChat(
             api_key=api_key,
             session_id=f"listing-{uuid.uuid4()}",
-            system_message="Tu es un expert immobilier parisien. Tu extrais des données structurées de fiches d'agences immobilières. Réponds UNIQUEMENT en JSON valide."
+            system_message="Tu es un expert immobilier région parisienne (Paris + petite couronne). Tu extrais des données structurées de fiches d'agences immobilières. Réponds UNIQUEMENT en JSON valide."
         ).with_model("gemini", "gemini-2.5-flash")
 
         file_attachment = FileContentWithMimeType(file_path=tmp_path, mime_type=mime)
@@ -1563,17 +1638,26 @@ async def analyze_listing(file: UploadFile = File(...)):
         asking_price = ext_data.get("asking_price", 0) or 0
         surface = ext_data.get("surface_carrez", 0) or ext_data.get("surface_habitable", 0) or 50
         price_sqm = round(asking_price / max(surface, 1)) if asking_price else 0
-        postal = ext_data.get("postal_code", "75016")
-        arr_avg = ARRONDISSEMENT_AVG_PRICES.get(postal, 10500)
+        postal = ext_data.get("postal_code", "75001")
+        arr_avg = ZONE_AVG_PRICES.get(postal, 8000)
 
         # Geocode the address to get lat/lon for DVF local search
         address_text = ext_data.get("address") or ""
         if not address_text and ext_data.get("neighborhood"):
-            address_text = f"{ext_data['neighborhood']} {postal} Paris"
+            address_text = f"{ext_data['neighborhood']} {postal}"
         elif not address_text:
-            address_text = f"{postal} Paris"
+            address_text = f"{postal}"
 
-        geo = await geocode_address(address_text + " Paris" if "paris" not in address_text.lower() else address_text)
+        # Only append city context if no city/postal hint detected
+        geo_query = address_text
+        if not any(kw in address_text.lower() for kw in ["paris", "neuilly", "boulogne", "clichy",
+            "levallois", "issy", "montrouge", "vincennes", "montreuil", "saint-"]):
+            if _is_paris_intramuros(postal):
+                geo_query = address_text + " Paris"
+            else:
+                geo_query = address_text  # BAN API handles postal codes well
+
+        geo = await geocode_address(geo_query)
         local_median = arr_avg
         search_radius = 0
         local_comparables = []
@@ -1597,7 +1681,7 @@ async def analyze_listing(file: UploadFile = File(...)):
                     local_median = round(raw_median * local_street_coeff)
                 else:
                     local_median = raw_median
-                micro = compute_micro_score(local_comparables, arr_avg)
+                micro = compute_micro_score(local_comparables, arr_avg, postal_code=postal)
                 if geo.get("postal_code"):
                     postal = geo["postal_code"]
                     arr_avg = ARRONDISSEMENT_AVG_PRICES.get(postal, arr_avg)
@@ -1652,6 +1736,8 @@ async def analyze_listing(file: UploadFile = File(...)):
                 "num_comparables": len(local_comparables),
                 "num_excluded": len(local_excluded),
                 "postal_code": postal,
+                "zone_label": _zone_display_label(postal),
+                "is_paris": _is_paris_intramuros(postal),
                 "asking_price_sqm": price_sqm,
                 "micro_score": micro,
                 "circle_stats": local_circle_stats,
@@ -1781,7 +1867,7 @@ async def generate_pdf_report(valuation_id: str):
     story.append(HRFlowable(width="100%", thickness=1, color=PDF_BLACK))
     story.append(Spacer(1, 6*mm))
     story.append(Paragraph(address, styles["H2"]))
-    story.append(Paragraph(f"{loc.get('postal_code', '')} {loc.get('city', 'Paris')}", styles["Body"]))
+    story.append(Paragraph(f"{loc.get('postal_code', '')} {loc.get('city', '')}", styles["Body"]))
     story.append(Spacer(1, 10*mm))
 
     # Price summary table
@@ -1854,7 +1940,7 @@ async def generate_pdf_report(valuation_id: str):
         story.append(Spacer(1, 6*mm))
         story.append(Paragraph("Position sur le marché", styles["H2"]))
         mp_text = f"Votre bien est estimé à {fmt_price(pos.get('estimated_sqm'))}/m², "
-        mp_text += f"soit {fmt_pct(pos.get('diff_pct'))} par rapport à la moyenne de l'arrondissement ({fmt_price(pos.get('arr_avg'))}/m²). "
+        mp_text += f"soit {fmt_pct(pos.get('diff_pct'))} par rapport à la moyenne de la zone ({fmt_price(pos.get('arr_avg'))}/m²). "
         mp_text += f"Position : <b>{pos.get('label', '=')}</b> — {pos.get('description', '')}"
         story.append(Paragraph(mp_text, styles["Body"]))
 
@@ -2059,7 +2145,7 @@ async def generate_listing_pdf(analysis_id: str):
     story.append(HRFlowable(width="100%", thickness=1, color=PDF_BLACK))
     story.append(Spacer(1, 4*mm))
     story.append(Paragraph(address, styles["H2"]))
-    story.append(Paragraph(f"{ext_data.get('postal_code', '')} Paris — {ext_data.get('neighborhood', '')}", styles["Body"]))
+    story.append(Paragraph(f"{ext_data.get('postal_code', '')} {ext_data.get('arrondissement', '')} — {ext_data.get('neighborhood', '')}", styles["Body"]))
     story.append(Spacer(1, 6*mm))
 
     if summary:
@@ -2098,7 +2184,7 @@ async def generate_listing_pdf(analysis_id: str):
     story.append(Spacer(1, 4*mm))
 
     # Market context
-    story.append(Paragraph(f"Rayon de recherche DVF : {mkt.get('search_radius_m', '?')}m — {mkt.get('num_comparables', 0)} transactions — Moy. arrondissement : {fmt_price(mkt.get('arrondissement_avg_sqm'))}/m²", styles["Small"]))
+    story.append(Paragraph(f"Rayon de recherche DVF : {mkt.get('search_radius_m', '?')}m — {mkt.get('num_comparables', 0)} transactions — Moy. zone : {fmt_price(mkt.get('arrondissement_avg_sqm'))}/m²", styles["Small"]))
     story.append(Spacer(1, 6*mm))
 
     # Characteristics

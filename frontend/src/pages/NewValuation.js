@@ -18,7 +18,7 @@ const STEPS = [
 ];
 
 const DEFAULT_FORM = {
-  location: { address: "", street_number: "", street_name: "", postal_code: "", city: "Paris", arrondissement: "", floor: 2, position: "sur_rue", latitude: 48.8566, longitude: 2.3522, iris_code: "" },
+  location: { address: "", street_number: "", street_name: "", postal_code: "", city: "", arrondissement: "", floor: 2, position: "sur_rue", latitude: 48.8566, longitude: 2.3522, iris_code: "" },
   characteristics: { surface_carrez: 50, surface_habitable: 50, rooms: 2, bedrooms: 1, bathrooms: 1, property_type: "appartement", exposure: "sud", luminosity: "bon", view: "degagee", exterior_type: "aucun", exterior_surface: 0, ceiling_height: "2.50-2.80", parking: "aucun", cave: false, cave_surface: 0, annexes: [] },
   condition: { general_state: "bon_etat", renovation_year: null, kitchen_quality: "equipee_basique", bathroom_quality: "standard", flooring: "parquet_massif", windows: "double_vitrage", insulation: "partielle", heating: "individuel_gaz", dpe: "D", ges: "D", asbestos: false, lead: false, electrical_compliance: true },
   building: { construction_era: "haussmannien", building_type: "pierre_taille", total_floors: 6, total_lots: 20, elevator: true, concierge: false, security: "digicode", common_areas_state: "bon", facade_state: "correct", roof_state: "correct", annual_charges: 2400, ongoing_procedures: "aucune", syndic_type: "professionnel" },
@@ -50,6 +50,7 @@ export default function NewValuation() {
   }, [searchTimeout]);
 
   const selectAddress = (addr) => {
+    const isParis = addr.postal_code?.startsWith("75");
     setForm(prev => ({
       ...prev,
       location: {
@@ -61,7 +62,7 @@ export default function NewValuation() {
         city: addr.city,
         latitude: addr.latitude,
         longitude: addr.longitude,
-        arrondissement: addr.postal_code ? addr.postal_code.slice(-2) : "",
+        arrondissement: isParis ? addr.postal_code.slice(-2) : (addr.city || ""),
       }
     }));
     setAddressSuggestions([]);
@@ -198,7 +199,7 @@ function Step1({ form, update, searchAddress, suggestions, selectAddress }) {
               <Input
                 value={form.location.address}
                 onChange={(e) => { update("location", "address", e.target.value); searchAddress(e.target.value); }}
-                placeholder="12 rue de Rivoli, 75004 Paris"
+                placeholder="12 rue de Rivoli, Paris ou 5 av. Charles de Gaulle, Neuilly"
                 className="rounded-none h-11 border-zinc-300 focus:ring-black"
                 data-testid="address-input"
               />
@@ -222,8 +223,8 @@ function Step1({ form, update, searchAddress, suggestions, selectAddress }) {
             <FieldGroup label="Code postal">
               <Input value={form.location.postal_code} onChange={(e) => update("location", "postal_code", e.target.value)} className="rounded-none h-11" data-testid="postal-code-input" />
             </FieldGroup>
-            <FieldGroup label="Arrondissement">
-              <Input value={form.location.arrondissement} onChange={(e) => update("location", "arrondissement", e.target.value)} placeholder="e.g. 04" className="rounded-none h-11" data-testid="arrondissement-input" />
+            <FieldGroup label="Arrondissement / Ville">
+              <Input value={form.location.arrondissement} onChange={(e) => update("location", "arrondissement", e.target.value)} placeholder="e.g. 04 ou Neuilly" className="rounded-none h-11" data-testid="arrondissement-input" />
             </FieldGroup>
           </div>
         </div>

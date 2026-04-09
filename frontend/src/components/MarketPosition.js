@@ -12,12 +12,14 @@ const POSITION_CONFIG = {
   "--": { color: "#E60000", bg: "#fef2f2", border: "#fecaca", icon: TrendingDown, label: "Nettement en-dessous" },
 };
 
-export default function MarketPosition({ position, surface, totalPrice }) {
+export default function MarketPosition({ position, surface, totalPrice, marketData }) {
   if (!position) return null;
 
   const config = POSITION_CONFIG[position.label] || POSITION_CONFIG["="];
   const Icon = config.icon;
-  const pricePerRoom = totalPrice && surface ? Math.round(totalPrice / Math.max(surface / 25, 1)) : null;
+  const zoneLabel = marketData?.zone_label || "zone";
+  const isParisIntra = marketData?.is_paris;
+  const avgLabel = isParisIntra ? `Moy. ${zoneLabel}` : `Moy. ${zoneLabel}`;
 
   return (
     <div data-testid="market-position">
@@ -28,7 +30,7 @@ export default function MarketPosition({ position, surface, totalPrice }) {
             <p className="text-xs uppercase tracking-[0.2em] text-zinc-400 font-mono mb-2">Position marché</p>
             <p className="text-sm text-zinc-600 mb-1">{position.description}</p>
             <p className="text-xs text-zinc-400 font-mono">
-              {formatPrice(position.estimated_sqm)} €/m² estimé vs {formatPrice(position.arr_avg)} €/m² moyenne arr.
+              {formatPrice(position.estimated_sqm)} €/m² estimé vs {formatPrice(position.arr_avg)} €/m² moy. {zoneLabel}
             </p>
           </div>
           <div
@@ -41,7 +43,7 @@ export default function MarketPosition({ position, surface, totalPrice }) {
                 {position.label}
               </p>
               <p className="text-xs font-mono" style={{ color: config.color }}>
-                {position.diff_pct > 0 ? "+" : ""}{position.diff_pct}% vs arr.
+                {position.diff_pct > 0 ? "+" : ""}{position.diff_pct}% vs zone
               </p>
             </div>
           </div>
@@ -82,7 +84,7 @@ export default function MarketPosition({ position, surface, totalPrice }) {
           <p className="font-mono font-bold text-lg">{formatPrice(position.estimated_sqm)} <span className="text-xs text-zinc-400">€/m²</span></p>
         </div>
         <div className="bg-white p-4">
-          <p className="text-xs text-zinc-400 font-mono mb-1">Moy. arrondissement</p>
+          <p className="text-xs text-zinc-400 font-mono mb-1">{avgLabel}</p>
           <p className="font-mono font-bold text-lg">{formatPrice(position.arr_avg)} <span className="text-xs text-zinc-400">€/m²</span></p>
         </div>
         <div className="bg-white p-4">

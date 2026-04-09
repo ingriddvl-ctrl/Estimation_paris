@@ -259,7 +259,7 @@ export default function ListingAnalyzer() {
                     </div>
                   )}
                   <div className="flex justify-between">
-                    <span className="text-xs text-zinc-500">Moy. arrondissement</span>
+                    <span className="text-xs text-zinc-500">Moy. {mkt.zone_label || "zone"}</span>
                     <span className="font-mono text-sm text-zinc-400">{formatPrice(mkt.arrondissement_avg_sqm)} €/m²</span>
                   </div>
                 </div>
