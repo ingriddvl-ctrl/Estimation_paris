@@ -1,57 +1,54 @@
-# Valorisateur d'Appartements Paris - PRD
+# VALORISATEUR PARIS — PRD
 
-## Problem Statement
-Application web de valorisation d'appartements à l'achat à Paris, connectée aux bases de données publiques (DVF, BAN, Géorisques), avec formulaire multi-étapes et algorithme d'estimation transparent.
+## Problème Original
+Application web complète pour estimer le prix d'achat d'appartements à Paris (intramuros + petite couronne). L'app doit être très précise, surpassant les outils existants (PriceHubble, MeilleursAgents), en exploitant les données publiques et privées. Elle fournit des valorisations transparentes et justifiables via un waterfall chart, des comparables sur carte, des explications d'hypothèses, et un simulateur de coût total.
 
 ## Architecture
-- Frontend: React + Tailwind + Shadcn/UI + Leaflet + Recharts
-- Backend: FastAPI + MongoDB
-- External APIs: DVF Cerema (transactions), BAN data.gouv (géocodage), Géorisques (risques)
+- **Frontend**: React + Tailwind CSS + Shadcn UI + Recharts + Leaflet
+- **Backend**: FastAPI + MongoDB + ReportLab (PDF)
+- **Intégrations**: DVF Cerema API, Géorisques API, Gemini 2.5 Flash (emergentintegrations)
 
-## User Personas
-- Acheteurs immobiliers à Paris cherchant à estimer un bien
-- Agents immobiliers vérifiant des prix
-- Investisseurs analysant la rentabilité
+## Fonctionnalités Implémentées
 
-## Core Requirements
-1. Formulaire multi-étapes (5 étapes: localisation, bien, état, immeuble, juridique)
-2. Moteur de valorisation avec DVF réel + coefficients d'ajustement
-3. Visualisations (waterfall chart, carte comparables, scores localisation)
-4. Simulateur de coût d'achat complet
-5. Historique et sauvegarde des estimations
-6. Partage en lecture seule
-7. Coefficients d'algorithme éditables
+### MVP (Done)
+- Formulaire multi-étapes (Localisation, Caractéristiques, État, Immeuble, Juridique)
+- Moteur d'estimation avec médiane tronquée DVF + ajustements plafonnés
+- Dashboard 7 onglets (Hypothèses, Marché, Expert, Estimation, Comparables, Risques, Documents)
+- Waterfall chart, carte Leaflet des comparables
+- Panel d'hypothèses transparent expliquant chaque ajustement
+- Position marché (++, +, =, -, --)
+- Sauvegarde/Historique/Partage
+- Configuration des coefficients algorithmiques
+- Upload de documents (Object Storage)
+- Simulateur d'achat (frais notaire, crédit, assurance)
 
-## Implemented (2026-04-07)
-- Formulaire multi-étapes complet (5 étapes, 40+ champs)
-- Autocomplétion d'adresse via API BAN data.gouv.fr
-- Moteur de valorisation connecté API DVF Cerema (transactions réelles)
-- Coefficients recalibrés et plafonnés (max 18% cumulé) pour estimations réalistes
-- Médiane tronquée DVF (trim 10%) pour réduire l'impact des outliers
-- Waterfall chart de décomposition du prix
-- Carte interactive Leaflet des comparables DVF
-- Hypothèses détaillées : chaque ajustement expliqué en langage clair
-- Position marché (++/+/=/−/−−) vs moyenne de l'arrondissement
-- Comparables du marché (transactions récentes DVF 2023-2025) avec carte et stats
-- Analyse expert : prix/pièce, charges copro, marge de négociation, coût détention 5 ans
-- Upload de documents (PV AG, DPE, charges, plans, diagnostics) via object storage
-- Simulateur de coût d'achat (notaire, crédit, assurance, travaux)
-- Historique des estimations avec CRUD + partage en lecture seule
-- Paramètres des coefficients entièrement éditables (y compris plafond cumulé)
+### Listing Analyzer (Done - 09/04/2026)
+- Upload de fiches d'agence (PDF/images)
+- Extraction automatique via Gemini 2.5 Flash (emergentintegrations)
+- Analyse IA du prix demandé avec arguments pour/contre
+- Conseils de négociation
+- Route /analyze accessible depuis la landing page
+
+### PDF Report Generation (Done - 09/04/2026)
+- Génération de rapport PDF professionnel (4 pages) via ReportLab
+- Couverture, caractéristiques, décomposition du prix, hypothèses, comparables, risques, méthodologie
+- Bouton de téléchargement dans la page Results
+- Endpoint: GET /api/report/pdf/{valuation_id}
 
 ## Backlog
-### P0 - Critique
+
+### P1
 - (aucun)
 
-### P1 - Important
-- Export PDF du rapport de valorisation
-- Mode comparaison 3 biens côte à côte
-- Scores de localisation dynamiques (connexion RATP/INSEE/Bruitparif)
-- Alertes sur nouvelles transactions DVF
+### P2
+- Mode comparaison (jusqu'à 3 biens côte à côte)
+- Compléter le Simulateur (détail frais notaire, courtier, assurance)
 
-### P2 - Nice to have  
-- Analyse d'investissement (rendement locatif, TRI)
-- Dark mode
-- Internationalisation (EN)
-- Pre-remplissage automatique DPE via API ADEME
-- Intégration BDNB (Base Nationale des Bâtiments)
+### P3
+- Cache DVF Cerema pour pallier les erreurs 503
+- Fallback robuste si l'API externe ne répond pas
+
+## Contraintes
+- Estimations conservatrices (plafonnement max_cumulative_pct à 18%)
+- Langue: Français uniquement
+- Toutes les API préfixées /api
