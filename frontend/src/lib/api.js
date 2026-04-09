@@ -50,4 +50,19 @@ export const api = {
       window.URL.revokeObjectURL(url);
     });
   },
+  downloadListingPdf: (analysisId) => {
+    return axios.get(`${API}/listing/report/pdf/${analysisId}`, { responseType: "blob" }).then(r => {
+      const url = window.URL.createObjectURL(new Blob([r.data], { type: "application/pdf" }));
+      const disposition = r.headers["content-disposition"] || "";
+      const match = disposition.match(/filename="?([^"]+)"?/);
+      const filename = match ? match[1] : `Analyse_${analysisId}.pdf`;
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    });
+  },
 };

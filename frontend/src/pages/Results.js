@@ -189,7 +189,7 @@ export default function Results() {
           </TabsContent>
 
           <TabsContent value="comparables" className="mt-6" data-testid="tab-content-comparables">
-            <ComparablesMap comparables={data.comparables || []} center={[loc.latitude || 48.8566, loc.longitude || 2.3522]} estimatedPrice={data.price_per_sqm_median || 0} />
+            <ComparablesMap comparables={data.comparables || []} center={[loc.latitude || 48.8566, loc.longitude || 2.3522]} estimatedPrice={data.price_per_sqm_median || 0} searchRadius={data.market_data?.search_radius_m} />
           </TabsContent>
 
           <TabsContent value="risques" className="mt-6" data-testid="tab-content-risques">

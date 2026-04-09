@@ -310,6 +310,179 @@ def get_arrondissement_zone(postal_code: str) -> str:
         return "intermediate"
     return "peripheral"
 
+# ─── Spatial Resolution Helpers ───
+
+def haversine_meters(lat1, lon1, lat2, lon2):
+    """Distance in meters between two GPS points"""
+    R = 6371000
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lon2 - lon1)
+    a = math.sin(dp/2)**2 + math.cos(p1)*math.cos(p2)*math.sin(dl/2)**2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+
+def _distance_weight(d_meters):
+    """Weight by proximity: 0m→1.0, 100m→0.67, 200m→0.50, 500m→0.29"""
+    return 1.0 / (1.0 + d_meters / 200.0)
+
+def _freshness_weight(date_str):
+    """Weight by recency: 2025→0.95, 2024→0.85, 2023→0.70, 2022→0.55, 2021→0.40"""
+    try:
+        year = int(str(date_str)[:4])
+    except (ValueError, TypeError):
+        return 0.5
+    age = max(0, 2026 - year)
+    return max(0.25, 1.0 - age * 0.15)
+
+def weighted_median_price(comparables):
+    """Distance+freshness weighted median of price/m²"""
+    if not comparables:
+        return 0
+    pairs = sorted([(c["price_per_sqm"], c.get("_weight", 1.0)) for c in comparables])
+    total = sum(w for _, w in pairs)
+    if total == 0:
+        return pairs[len(pairs)//2][0]
+    cumul = 0
+    for val, w in pairs:
+        cumul += w
+        if cumul >= total / 2:
+            return val
+    return pairs[-1][0]
+
+def _parse_dvf_feature(f, ref_lat, ref_lon, max_radius):
+    """Parse a single DVF GeoJSON feature, return comparable dict or None"""
+    p = f.get("properties", {})
+    geom = f.get("geometry", {})
+    coords = None
+    if geom.get("type") == "Polygon" and geom.get("coordinates"):
+        ring = geom["coordinates"][0]
+        coords = [sum(c[0] for c in ring)/len(ring), sum(c[1] for c in ring)/len(ring)]
+    elif geom.get("type") == "MultiPolygon" and geom.get("coordinates"):
+        ring = geom["coordinates"][0][0]
+        coords = [sum(c[0] for c in ring)/len(ring), sum(c[1] for c in ring)/len(ring)]
+    if not coords:
+        return None
+    price = p.get("valeurfonc")
+    surface = p.get("sbati")
+    if not price or not surface:
+        return None
+    pf, sf = float(price), float(surface)
+    if pf <= 10000 or sf <= 9:
+        return None
+    clat, clon = coords[1], coords[0]
+    d = haversine_meters(ref_lat, ref_lon, clat, clon)
+    if d > max_radius:
+        return None
+    date_str = str(p.get("datemut", p.get("anneemut", "")))
+    dw = _distance_weight(d)
+    fw = _freshness_weight(date_str)
+    return {
+        "date": date_str,
+        "price": pf,
+        "surface": sf,
+        "rooms": p.get("nbpiece", 0) or 0,
+        "address": p.get("l_adresse", "") or f"Parcelle {p.get('l_idpar', '')}",
+        "postal_code": str(p.get("l_codinsee", ""))[:5],
+        "latitude": clat,
+        "longitude": clon,
+        "price_per_sqm": round(pf / sf),
+        "distance_m": round(d),
+        "_weight": round(dw * fw, 4),
+    }
+
+async def fetch_dvf_progressive(lat, lon, min_comps=10):
+    """
+    RÈGLE ABSOLUE: Jamais de moyenne d'arrondissement comme point de départ.
+    Recherche progressive: 200m → 300m → 500m → 800m.
+    Pondération par distance + fraîcheur.
+    Returns (comparables, search_radius_used).
+    """
+    import asyncio
+    radii = [200, 300, 500, 800]
+
+    for radius in radii:
+        comparables = []
+        delta = radius / 111000.0
+        bbox = f"{lon-delta},{lat-delta},{lon+delta},{lat+delta}"
+
+        for attempt in range(3):
+            try:
+                async with httpx.AsyncClient(timeout=15) as cl:
+                    resp = await cl.get(
+                        "https://apidf-preprod.cerema.fr/dvf_opendata/geomutations/",
+                        params={"in_bbox": bbox, "page_size": 100, "anneemut_min": 2020}
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        for feat in data.get("features", []):
+                            c = _parse_dvf_feature(feat, lat, lon, radius)
+                            if c:
+                                comparables.append(c)
+                        break
+                    elif resp.status_code == 503:
+                        await asyncio.sleep(1)
+                        continue
+                    else:
+                        break
+            except Exception:
+                await asyncio.sleep(1)
+
+        if len(comparables) >= min_comps:
+            # Sort by weight descending (closest + most recent first)
+            comparables.sort(key=lambda x: x["_weight"], reverse=True)
+            return comparables, radius
+
+    # Return whatever we found at the largest radius
+    comparables.sort(key=lambda x: x["_weight"], reverse=True)
+    return comparables, radii[-1]
+
+def compute_micro_score(comparables, arr_avg):
+    """Compute micro-location score from local DVF data"""
+    if not comparables:
+        return {"score": 50, "detail": "Données DVF insuffisantes pour scorer", "local_premium_pct": 0, "density_300m": 0, "price_homogeneity": 50, "local_median_sqm": 0}
+    local_median = weighted_median_price(comparables)
+    premium_pct = ((local_median - arr_avg) / arr_avg * 100) if arr_avg > 0 else 0
+    close = [c for c in comparables if c.get("distance_m", 999) <= 300]
+    density = len(close)
+    prices = [c["price_per_sqm"] for c in comparables]
+    mean_p = sum(prices) / len(prices)
+    std_p = (sum((p - mean_p)**2 for p in prices) / len(prices)) ** 0.5
+    cv = std_p / mean_p if mean_p > 0 else 1
+    homogeneity = max(0, min(100, int(100 * (1 - cv))))
+    score = int(50 + premium_pct * 1.5)
+    score = max(10, min(100, score))
+    parts = []
+    if premium_pct > 5:
+        parts.append(f"Micro-localisation premium (+{premium_pct:.0f}% vs arrondissement)")
+    elif premium_pct < -5:
+        parts.append(f"Micro-localisation en retrait ({premium_pct:.0f}% vs arrondissement)")
+    else:
+        parts.append("Micro-localisation dans la moyenne de l'arrondissement")
+    parts.append(f"{density} transaction(s) à moins de 300m")
+    return {
+        "score": score,
+        "detail": ". ".join(parts),
+        "local_premium_pct": round(premium_pct, 1),
+        "density_300m": density,
+        "price_homogeneity": homogeneity,
+        "local_median_sqm": round(local_median),
+    }
+
+async def geocode_address(address_text):
+    """Geocode an address using api-adresse.data.gouv.fr"""
+    try:
+        async with httpx.AsyncClient(timeout=10) as cl:
+            resp = await cl.get("https://api-adresse.data.gouv.fr/search/", params={"q": address_text, "limit": 1})
+            if resp.status_code == 200:
+                feats = resp.json().get("features", [])
+                if feats:
+                    coords = feats[0]["geometry"]["coordinates"]
+                    props = feats[0]["properties"]
+                    return {"latitude": coords[1], "longitude": coords[0], "postal_code": props.get("postcode", ""), "label": props.get("label", "")}
+    except Exception as e:
+        logger.warning(f"Geocode error: {e}")
+    return None
+
 def compute_floor_adjustment(floor: int, elevator: bool, config: AlgorithmConfig) -> tuple:
     if floor == 0:
         return config.floor_rdc, "RDC : décote standard"
@@ -336,71 +509,23 @@ async def estimate_valuation(req: ValuationRequest):
     bldg = req.building
     legal = req.legal
 
-    # 1. Fetch DVF comparables via Cerema API (with retry)
+    # 1. Fetch DVF comparables via progressive radius search (200m → 300m → 500m → 800m)
     comparables = []
-    base_price_sqm = 10500.0  # Paris average fallback
+    search_radius = 200
     try:
-        delta = 500 / 111000.0
-        bbox = f"{loc.longitude - delta},{loc.latitude - delta},{loc.longitude + delta},{loc.latitude + delta}"
-        import asyncio
-        for attempt in range(3):
-            try:
-                async with httpx.AsyncClient(timeout=15) as client_http:
-                    resp = await client_http.get(
-                        "https://apidf-preprod.cerema.fr/dvf_opendata/geomutations/",
-                        params={"in_bbox": bbox, "page_size": 50, "anneemut_min": 2020}
-                    )
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        for f in data.get("features", []):
-                            p = f.get("properties", {})
-                            geom = f.get("geometry", {})
-                            coords = [loc.longitude, loc.latitude]
-                            if geom.get("type") == "Polygon" and geom.get("coordinates"):
-                                ring = geom["coordinates"][0]
-                                coords = [sum(c[0] for c in ring)/len(ring), sum(c[1] for c in ring)/len(ring)]
-                            elif geom.get("type") == "MultiPolygon" and geom.get("coordinates"):
-                                ring = geom["coordinates"][0][0]
-                                coords = [sum(c[0] for c in ring)/len(ring), sum(c[1] for c in ring)/len(ring)]
-                            price = p.get("valeurfonc")
-                            surface = p.get("sbati")
-                            if price and surface:
-                                price_f = float(price)
-                                surface_f = float(surface)
-                                if price_f > 10000 and surface_f > 9:
-                                    comparables.append({
-                                        "date": str(p.get("datemut", p.get("anneemut", ""))),
-                                        "price": price_f,
-                                        "surface": surface_f,
-                                        "rooms": p.get("nbpiece", 0) or 0,
-                                        "address": p.get("l_adresse", "") or f"Parcelle {p.get('l_idpar', '')}",
-                                        "postal_code": str(p.get("l_codinsee", ""))[:5],
-                                        "latitude": coords[1],
-                                        "longitude": coords[0],
-                                        "price_per_sqm": round(price_f / surface_f),
-                                    })
-                        break  # success
-                    elif resp.status_code == 503:
-                        await asyncio.sleep(1)
-                        continue
-                    else:
-                        break
-            except Exception:
-                await asyncio.sleep(1)
+        comparables, search_radius = await fetch_dvf_progressive(loc.latitude, loc.longitude, min_comps=10)
     except Exception as e:
-        logger.warning(f"DVF API error: {e}")
+        logger.warning(f"DVF progressive search error: {e}")
 
-    # Calculate trimmed median from comparables (remove top/bottom 10% to reduce outlier impact)
+    # RÈGLE ABSOLUE: le prix de base = toujours la médiane pondérée des transactions réelles
+    # Jamais un prix moyen d'arrondissement
     if comparables:
-        prices = sorted([c["price_per_sqm"] for c in comparables])
-        n = len(prices)
-        # Trim 10% from each end
-        trim = max(1, n // 10)
-        trimmed = prices[trim:n-trim] if n > 4 else prices
-        tn = len(trimmed)
-        base_price_sqm = trimmed[tn // 2] if tn % 2 == 1 else (trimmed[tn // 2 - 1] + trimmed[tn // 2]) / 2
-    
-    confidence = min(95, 30 + len(comparables) * 3)
+        base_price_sqm = weighted_median_price(comparables)
+    else:
+        # Fallback uniquement si 0 comparables trouvés même à 800m
+        base_price_sqm = ARRONDISSEMENT_AVG_PRICES.get(loc.postal_code, 10500)
+
+    confidence = min(95, 25 + len(comparables) * 2 + (15 if search_radius <= 300 else 5))
 
     # 2. Apply adjustments
     adjustments = []
@@ -649,6 +774,9 @@ async def estimate_valuation(req: ValuationRequest):
     except Exception:
         pass
 
+    # Micro-location score
+    micro_score = compute_micro_score(comparables, arr_avg)
+
     result = ValuationResult(
         request=req,
         price_low=round(total_price_low),
@@ -659,7 +787,7 @@ async def estimate_valuation(req: ValuationRequest):
         price_per_sqm_high=round(total_price_high / max(chars.surface_carrez, 1)),
         confidence_score=confidence,
         adjustments=adjustments,
-        comparables=comparables[:20],
+        comparables=comparables[:25],
         location_scores=location_scores,
         risks=risks,
         market_data={
@@ -668,11 +796,13 @@ async def estimate_valuation(req: ValuationRequest):
             "arrondissement": loc.postal_code,
             "zone": zone,
             "total_comparables": len(comparables),
+            "search_radius_m": search_radius,
             "adjustment_pct": round(total_pct_adjustment, 1),
             "adjustment_flat": round(total_flat_adjustment),
-            "base_source": "DVF Cerema (transactions réelles)" if comparables else "Moyenne parisienne (fallback)",
+            "base_source": f"DVF Cerema — médiane pondérée ({search_radius}m)" if comparables else "Moyenne arrondissement (fallback — aucune transaction DVF trouvée)",
             "comparables_period": "2020–2025",
             "market_position": market_position,
+            "micro_score": micro_score,
         }
     )
     return result.model_dump()
@@ -1011,7 +1141,13 @@ ANALYSIS_PROMPT_TEMPLATE = """Tu es un expert en valorisation immobilière paris
 
 Le prix demandé est de {asking_price}€ pour {surface}m² soit {price_sqm}€/m².
 
-La moyenne des transactions DVF récentes dans l'arrondissement est d'environ {arr_avg}€/m².
+DONNÉES DE MARCHÉ LOCALES (transactions DVF réelles):
+- Médiane pondérée (distance+fraîcheur) dans un rayon de {search_radius}m : {local_median}€/m²
+- Nombre de transactions comparables : {num_comparables}
+- Moyenne de l'arrondissement : {arr_avg}€/m²
+- Prime de micro-localisation : {local_premium}% vs arrondissement
+
+IMPORTANT: Base-toi PRINCIPALEMENT sur la médiane locale DVF ({local_median}€/m²), PAS la moyenne d'arrondissement.
 
 ANALYSE DE PRIX — Réponds en JSON UNIQUEMENT:
 {{
@@ -1023,7 +1159,7 @@ ANALYSE DE PRIX — Réponds en JSON UNIQUEMENT:
   "arguments_for": ["3-5 arguments qui justifient un prix élevé"],
   "arguments_against": ["3-5 arguments qui justifient un prix plus bas"],
   "negotiation_tips": ["2-3 conseils de négociation spécifiques à ce bien"],
-  "verdict": "paragraphe de 4-5 lignes avec ton verdict argumenté sur le prix demandé, en étant direct et factuel"
+  "verdict": "paragraphe de 4-5 lignes avec ton verdict argumenté sur le prix demandé, en étant direct et factuel. Base ton analyse sur la médiane locale DVF."
 }}"""
 
 @api_router.post("/listing/analyze")
@@ -1073,19 +1209,45 @@ async def analyze_listing(file: UploadFile = File(...)):
         ext_data = extracted.get("extracted", extracted)
         summary = extracted.get("summary", "")
 
-        # Step 2: Price analysis
+        # Step 2: Price analysis — use LOCAL DVF data, not arrondissement average
         asking_price = ext_data.get("asking_price", 0) or 0
         surface = ext_data.get("surface_carrez", 0) or ext_data.get("surface_habitable", 0) or 50
         price_sqm = round(asking_price / max(surface, 1)) if asking_price else 0
         postal = ext_data.get("postal_code", "75016")
         arr_avg = ARRONDISSEMENT_AVG_PRICES.get(postal, 10500)
 
+        # Geocode the address to get lat/lon for DVF local search
+        address_text = ext_data.get("address") or ""
+        if not address_text and ext_data.get("neighborhood"):
+            address_text = f"{ext_data['neighborhood']} {postal} Paris"
+        elif not address_text:
+            address_text = f"{postal} Paris"
+
+        geo = await geocode_address(address_text + " Paris" if "paris" not in address_text.lower() else address_text)
+        local_median = arr_avg
+        search_radius = 0
+        local_comparables = []
+        micro = {"local_premium_pct": 0}
+
+        if geo:
+            local_comparables, search_radius = await fetch_dvf_progressive(geo["latitude"], geo["longitude"], min_comps=8)
+            if local_comparables:
+                local_median = weighted_median_price(local_comparables)
+                micro = compute_micro_score(local_comparables, arr_avg)
+                if geo.get("postal_code"):
+                    postal = geo["postal_code"]
+                    arr_avg = ARRONDISSEMENT_AVG_PRICES.get(postal, arr_avg)
+
         analysis_prompt = ANALYSIS_PROMPT_TEMPLATE.format(
             extracted_json=json_mod.dumps(ext_data, ensure_ascii=False, indent=2),
             asking_price=f"{asking_price:,.0f}",
             surface=surface,
             price_sqm=f"{price_sqm:,.0f}",
-            arr_avg=f"{arr_avg:,.0f}"
+            arr_avg=f"{arr_avg:,.0f}",
+            local_median=f"{local_median:,.0f}",
+            search_radius=search_radius,
+            num_comparables=len(local_comparables),
+            local_premium=f"{micro.get('local_premium_pct', 0):+.1f}",
         )
 
         chat2 = LlmChat(
@@ -1101,17 +1263,35 @@ async def analyze_listing(file: UploadFile = File(...)):
             raw2 = raw2.rsplit("```", 1)[0]
         analysis = json_mod.loads(raw2)
 
-        return {
+        # Build result with DVF local data
+        analysis_id = str(uuid.uuid4())
+        result_data = {
             "status": "success",
+            "analysis_id": analysis_id,
             "extracted": ext_data,
             "summary": summary,
             "analysis": analysis,
             "market_reference": {
                 "arrondissement_avg_sqm": arr_avg,
+                "local_dvf_median_sqm": round(local_median),
+                "search_radius_m": search_radius,
+                "num_comparables": len(local_comparables),
                 "postal_code": postal,
                 "asking_price_sqm": price_sqm,
-            }
+                "micro_score": micro,
+            },
+            "comparables": [
+                {k: v for k, v in c.items() if k != "_weight"}
+                for c in local_comparables[:15]
+            ],
         }
+
+        # Save to MongoDB for PDF export
+        save_doc = {**result_data, "created_at": datetime.now(timezone.utc).isoformat()}
+        await db.listing_analyses.insert_one(save_doc)
+        save_doc.pop("_id", None)
+
+        return result_data
 
     except json_mod.JSONDecodeError as e:
         logger.error(f"JSON parse error: {e}\nRaw: {raw[:500] if 'raw' in dir() else 'N/A'}")
@@ -1463,6 +1643,184 @@ async def generate_pdf_report(valuation_id: str):
 
     safe_address = address.replace(" ", "_").replace("/", "-")[:50]
     filename = f"Estimation_{safe_address}_{date_str}.pdf"
+
+    return Response(
+        content=buffer.getvalue(),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
+
+# ─── Listing Analysis PDF Report ───
+
+@api_router.get("/listing/report/pdf/{analysis_id}")
+async def generate_listing_pdf(analysis_id: str):
+    doc_data = await db.listing_analyses.find_one({"analysis_id": analysis_id}, {"_id": 0})
+    if not doc_data:
+        raise HTTPException(status_code=404, detail="Analyse introuvable")
+
+    ext_data = doc_data.get("extracted", {})
+    analysis = doc_data.get("analysis", {})
+    mkt = doc_data.get("market_reference", {})
+    summary = doc_data.get("summary", "")
+    comps = doc_data.get("comparables", [])
+    date_str = doc_data.get("created_at", "")[:10]
+
+    address = ext_data.get("address") or "Adresse inconnue"
+    asking = ext_data.get("asking_price", 0)
+    surface = ext_data.get("surface_carrez", 0) or ext_data.get("surface_habitable", 0) or 0
+
+    styles = build_pdf_styles()
+    buffer = io.BytesIO()
+    pdf = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=20*mm, rightMargin=20*mm, topMargin=24*mm, bottomMargin=22*mm)
+    story = []
+
+    # Cover
+    story.append(Spacer(1, 25*mm))
+    story.append(Paragraph("ANALYSE DE FICHE D'AGENCE", styles["H1"]))
+    story.append(Spacer(1, 4*mm))
+    story.append(HRFlowable(width="100%", thickness=1, color=PDF_BLACK))
+    story.append(Spacer(1, 4*mm))
+    story.append(Paragraph(address, styles["H2"]))
+    story.append(Paragraph(f"{ext_data.get('postal_code', '')} Paris — {ext_data.get('neighborhood', '')}", styles["Body"]))
+    story.append(Spacer(1, 6*mm))
+
+    if summary:
+        story.append(Paragraph(summary, styles["Body"]))
+        story.append(Spacer(1, 6*mm))
+
+    # Price opinion box
+    opinion_labels = {"sous-évalué": "SOUS-ÉVALUÉ", "prix_juste": "PRIX JUSTE", "surévalué": "SURÉVALUÉ", "très_surévalué": "TRÈS SURÉVALUÉ"}
+    opinion_label = opinion_labels.get(analysis.get("price_opinion", ""), analysis.get("price_opinion", ""))
+
+    price_data = [
+        ["PRIX DEMANDÉ", "ESTIMATION JUSTE", "AVIS", "MÉDIANE LOCALE DVF"],
+        [
+            fmt_price(asking),
+            f"{fmt_price(analysis.get('estimated_fair_price_low'))} — {fmt_price(analysis.get('estimated_fair_price_high'))}",
+            opinion_label,
+            f"{fmt_price(mkt.get('local_dvf_median_sqm'))}/m²",
+        ],
+    ]
+    price_table = Table(price_data, colWidths=[40*mm, 50*mm, 38*mm, 34*mm])
+    price_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), PDF_BLACK),
+        ("TEXTCOLOR", (0, 0), (-1, 0), PDF_WHITE),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, 0), 7),
+        ("FONTNAME", (0, 1), (-1, 1), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 1), (-1, 1), 10),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("BOTTOMPADDING", (0, 0), (-1, 0), 6),
+        ("TOPPADDING", (0, 1), (-1, 1), 8),
+        ("BOTTOMPADDING", (0, 1), (-1, 1), 8),
+        ("GRID", (0, 0), (-1, -1), 0.5, HexColor("#E4E4E7")),
+    ]))
+    story.append(price_table)
+    story.append(Spacer(1, 4*mm))
+
+    # Market context
+    story.append(Paragraph(f"Rayon de recherche DVF : {mkt.get('search_radius_m', '?')}m — {mkt.get('num_comparables', 0)} transactions — Moy. arrondissement : {fmt_price(mkt.get('arrondissement_avg_sqm'))}/m²", styles["Small"]))
+    story.append(Spacer(1, 6*mm))
+
+    # Characteristics
+    chars_items = [
+        ("Surface", f"{surface} m²"), ("Pièces", str(ext_data.get("rooms", "?"))),
+        ("Chambres", str(ext_data.get("bedrooms", "?"))), ("Étage", f"{ext_data.get('floor', '?')}/{ext_data.get('total_floors', '?')}"),
+        ("DPE", str(ext_data.get("dpe", "?"))), ("État", str(ext_data.get("general_state", "?")).replace("_", " ")),
+        ("Ascenseur", "Oui" if ext_data.get("elevator") else "Non"),
+        ("Parking", str(ext_data.get("parking", "aucun"))),
+        ("Extérieur", str(ext_data.get("exterior_type", "aucun"))),
+        ("Immeuble", str(ext_data.get("building_type", "?")).replace("_", " ")),
+    ]
+    char_data = [["CARACTÉRISTIQUE", "VALEUR"]]
+    for label, val in chars_items:
+        char_data.append([label, val])
+    char_table = Table(char_data, colWidths=[80*mm, 82*mm])
+    char_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), PDF_LIGHT),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"), ("FONTSIZE", (0, 0), (-1, 0), 7),
+        ("FONTSIZE", (0, 1), (-1, -1), 8),
+        ("TEXTCOLOR", (0, 1), (0, -1), PDF_GRAY),
+        ("FONTNAME", (1, 1), (1, -1), "Helvetica-Bold"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("GRID", (0, 0), (-1, -1), 0.3, HexColor("#E4E4E7")),
+    ]))
+    story.append(Paragraph("Caractéristiques extraites", styles["H2"]))
+    story.append(char_table)
+
+    story.append(PageBreak())
+
+    # Verdict
+    if analysis.get("verdict"):
+        story.append(Paragraph("Verdict", styles["H1"]))
+        story.append(Spacer(1, 3*mm))
+        story.append(Paragraph(analysis["verdict"], styles["Body"]))
+        story.append(Spacer(1, 6*mm))
+
+    # Arguments
+    if analysis.get("arguments_for"):
+        story.append(Paragraph("Arguments pour le prix", styles["H2"]))
+        for arg in analysis["arguments_for"]:
+            story.append(Paragraph(f'<font color="#008A00">+</font> {arg}', styles["Body"]))
+        story.append(Spacer(1, 4*mm))
+
+    if analysis.get("arguments_against"):
+        story.append(Paragraph("Arguments contre le prix", styles["H2"]))
+        for arg in analysis["arguments_against"]:
+            story.append(Paragraph(f'<font color="#E60000">-</font> {arg}', styles["Body"]))
+        story.append(Spacer(1, 4*mm))
+
+    if analysis.get("negotiation_tips"):
+        story.append(Paragraph("Conseils de négociation", styles["H2"]))
+        for tip in analysis["negotiation_tips"]:
+            story.append(Paragraph(f"• {tip}", styles["Body"]))
+        story.append(Spacer(1, 4*mm))
+
+    # Comparables
+    if comps:
+        story.append(Paragraph(f"Transactions DVF proches ({len(comps)})", styles["H2"]))
+        comp_data = [["DATE", "ADRESSE", "DIST.", "SURFACE", "PRIX/M²"]]
+        for c in comps[:15]:
+            comp_data.append([
+                str(c.get("date", ""))[:10],
+                str(c.get("address", ""))[:35],
+                f"{c.get('distance_m', '?')}m",
+                f"{c.get('surface', 0):.0f} m²",
+                fmt_price(c.get("price_per_sqm")),
+            ])
+        comp_table = Table(comp_data, colWidths=[22*mm, 55*mm, 18*mm, 22*mm, 28*mm])
+        comp_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), PDF_BLACK),
+            ("TEXTCOLOR", (0, 0), (-1, 0), PDF_WHITE),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, 0), 6.5),
+            ("FONTSIZE", (0, 1), (-1, -1), 7),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+            ("GRID", (0, 0), (-1, -1), 0.3, HexColor("#E4E4E7")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [PDF_WHITE, PDF_LIGHT]),
+        ]))
+        story.append(comp_table)
+
+    story.append(Spacer(1, 8*mm))
+    story.append(Paragraph("Avertissement", styles["H2"]))
+    story.append(Paragraph("Ce rapport est généré automatiquement à partir d'une fiche d'agence analysée par IA. Les données extraites peuvent contenir des erreurs. Les prix de référence proviennent exclusivement des transactions DVF réelles. Ce document ne constitue pas une expertise immobilière.", styles["Body"]))
+    story.append(Spacer(1, 4*mm))
+    story.append(Paragraph(f"Rapport généré le {datetime.now(timezone.utc).strftime('%d/%m/%Y à %H:%M')} UTC", styles["Small"]))
+
+    def on_page(canvas, doc):
+        _header_footer(canvas, doc, address, date_str)
+
+    pdf.build(story, onFirstPage=on_page, onLaterPages=on_page)
+    buffer.seek(0)
+
+    safe_addr = address.replace(" ", "_").replace("/", "-")[:50]
+    filename = f"Analyse_{safe_addr}_{date_str}.pdf"
 
     return Response(
         content=buffer.getvalue(),

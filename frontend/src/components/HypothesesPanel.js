@@ -172,6 +172,30 @@ export default function HypothesesPanel({ adjustments, marketData }) {
             {marketData.total_comparables > 0 && ` — ${marketData.total_comparables} transactions analysées`}
           </p>
         )}
+
+        {/* Micro-score */}
+        {marketData?.micro_score && marketData.micro_score.score > 0 && (
+          <div className="mt-4 px-4 py-3 border border-zinc-200 bg-white flex items-center justify-between flex-wrap gap-3" data-testid="micro-score-panel">
+            <div>
+              <p className="text-xs text-zinc-400 font-mono mb-1">Score micro-localisation</p>
+              <p className="text-sm text-zinc-600">{marketData.micro_score.detail}</p>
+            </div>
+            <div className="flex items-center gap-3">
+              {marketData.micro_score.density_300m > 0 && (
+                <div className="text-center px-3 py-1 bg-zinc-50 border border-zinc-100">
+                  <p className="font-mono text-sm font-bold">{marketData.micro_score.density_300m}</p>
+                  <p className="text-[10px] text-zinc-400">à 300m</p>
+                </div>
+              )}
+              <div className="text-center px-3 py-1 bg-zinc-50 border border-zinc-100">
+                <p className="font-mono text-sm font-bold" style={{ color: marketData.micro_score.local_premium_pct > 0 ? "#008A00" : marketData.micro_score.local_premium_pct < 0 ? "#E60000" : "#18181B" }}>
+                  {marketData.micro_score.local_premium_pct > 0 ? "+" : ""}{marketData.micro_score.local_premium_pct}%
+                </p>
+                <p className="text-[10px] text-zinc-400">vs arr.</p>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Toggle all */}

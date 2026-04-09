@@ -3,7 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { Upload, Loader2, FileText, ArrowRight, TrendingUp, TrendingDown, Minus, AlertTriangle, CheckCircle, XCircle, ChevronDown, ChevronUp } from "lucide-react";
+import { Upload, Loader2, FileText, ArrowRight, TrendingUp, TrendingDown, Minus, AlertTriangle, CheckCircle, XCircle, ChevronDown, ChevronUp, Download, MapPin } from "lucide-react";
 
 function formatPrice(n) {
   if (!n) return "—";
@@ -32,8 +32,10 @@ export default function ListingAnalyzer() {
   const fileRef = useRef(null);
   const [file, setFile] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [pdfLoading, setPdfLoading] = useState(false);
   const [result, setResult] = useState(null);
   const [showAllFields, setShowAllFields] = useState(false);
+  const [showComps, setShowComps] = useState(false);
 
   const handleFile = (e) => {
     const f = e.target.files?.[0];
@@ -56,15 +58,30 @@ export default function ListingAnalyzer() {
     }
   };
 
+  const handleDownloadPdf = async () => {
+    if (!result?.analysis_id) return;
+    setPdfLoading(true);
+    try {
+      await api.downloadListingPdf(result.analysis_id);
+      toast.success("Rapport PDF téléchargé !");
+    } catch {
+      toast.error("Erreur lors de la génération du PDF");
+    } finally {
+      setPdfLoading(false);
+    }
+  };
+
   const handleLaunchEstimation = () => {
     if (!result?.extracted) return;
-    // Store extracted data in sessionStorage and navigate to form
     sessionStorage.setItem("prefill_listing", JSON.stringify(result.extracted));
     navigate("/new?from=listing");
   };
 
   const ext = result?.extracted || {};
   const analysis = result?.analysis || {};
+  const mkt = result?.market_reference || {};
+  const micro = mkt.micro_score || {};
+  const comps = result?.comparables || [];
   const opConfig = OPINION_CONFIG[analysis.price_opinion] || OPINION_CONFIG["prix_juste"];
   const OpIcon = opConfig?.icon || Minus;
 
@@ -79,7 +96,14 @@ export default function ListingAnalyzer() {
             </div>
             <span className="font-heading font-bold text-lg tracking-tight">VALORISATEUR</span>
           </Link>
-          <Link to="/history" className="text-xs text-zinc-500 hover:text-black">Historique</Link>
+          <div className="flex items-center gap-4">
+            {result?.analysis_id && (
+              <Button variant="outline" size="sm" onClick={handleDownloadPdf} disabled={pdfLoading} className="rounded-none text-xs" data-testid="listing-pdf-btn">
+                {pdfLoading ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <Download className="w-3.5 h-3.5 mr-1.5" />} PDF
+              </Button>
+            )}
+            <Link to="/history" className="text-xs text-zinc-500 hover:text-black">Historique</Link>
+          </div>
         </div>
       </header>
 
@@ -88,8 +112,8 @@ export default function ListingAnalyzer() {
           Analyseur de fiches d'agence
         </h1>
         <p className="text-sm text-zinc-500 mb-8 max-w-2xl">
-          Uploadez une fiche d'agence (PDF ou image) — l'IA extrait automatiquement les caractéristiques
-          et vous donne son avis sur le prix demandé, sans complaisance.
+          Uploadez une fiche d'agence (PDF ou image) — l'IA extrait automatiquement les caractéristiques,
+          recherche les transactions DVF proches et vous donne son avis sur le prix demandé.
         </p>
 
         {/* Upload zone */}
@@ -200,7 +224,7 @@ export default function ListingAnalyzer() {
                   )}
                   <div className="flex justify-between">
                     <span className="text-xs text-zinc-500">Prix/m² demandé</span>
-                    <span className="font-mono text-sm">{formatPrice(result.market_reference?.asking_price_sqm)} €</span>
+                    <span className="font-mono text-sm">{formatPrice(mkt.asking_price_sqm)} €</span>
                   </div>
                   <div className="h-px bg-zinc-200" />
                   <div className="flex justify-between">
@@ -209,11 +233,28 @@ export default function ListingAnalyzer() {
                       {formatPrice(analysis.estimated_fair_price_low)} — {formatPrice(analysis.estimated_fair_price_high)} €
                     </span>
                   </div>
+                  <div className="h-px bg-zinc-100" />
+                  <div className="flex justify-between">
+                    <span className="text-xs text-zinc-500">Médiane DVF locale</span>
+                    <span className="font-mono text-sm font-bold">{formatPrice(mkt.local_dvf_median_sqm)} €/m²</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-xs text-zinc-500">Rayon de recherche</span>
+                    <span className="font-mono text-sm">{mkt.search_radius_m || "?"}m ({mkt.num_comparables || 0} transactions)</span>
+                  </div>
                   <div className="flex justify-between">
                     <span className="text-xs text-zinc-500">Moy. arrondissement</span>
-                    <span className="font-mono text-sm">{formatPrice(result.market_reference?.arrondissement_avg_sqm)} €/m²</span>
+                    <span className="font-mono text-sm text-zinc-400">{formatPrice(mkt.arrondissement_avg_sqm)} €/m²</span>
                   </div>
                 </div>
+                {micro.local_premium_pct !== undefined && micro.local_premium_pct !== 0 && (
+                  <div className="text-xs px-2 py-1.5 bg-zinc-50 border border-zinc-200" data-testid="micro-score">
+                    <MapPin className="w-3 h-3 inline mr-1 text-zinc-400" />
+                    Micro-localisation : <span className="font-mono font-bold" style={{ color: micro.local_premium_pct > 0 ? "#008A00" : "#E60000" }}>
+                      {micro.local_premium_pct > 0 ? "+" : ""}{micro.local_premium_pct}%
+                    </span> vs arrondissement
+                  </div>
+                )}
               </div>
             </div>
 
@@ -271,6 +312,48 @@ export default function ListingAnalyzer() {
                     </li>
                   ))}
                 </ul>
+              </div>
+            )}
+
+            {/* DVF Comparables */}
+            {comps.length > 0 && (
+              <div className="border border-zinc-200">
+                <button
+                  onClick={() => setShowComps(!showComps)}
+                  className="w-full px-6 py-3 flex items-center justify-between hover:bg-zinc-50 transition-colors"
+                  data-testid="toggle-comparables"
+                >
+                  <p className="text-xs uppercase tracking-[0.2em] text-zinc-500 font-mono">
+                    Transactions DVF proches ({comps.length})
+                  </p>
+                  {showComps ? <ChevronUp className="w-4 h-4 text-zinc-400" /> : <ChevronDown className="w-4 h-4 text-zinc-400" />}
+                </button>
+                {showComps && (
+                  <div className="overflow-x-auto" data-testid="comparables-table">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-t border-b border-zinc-200 bg-zinc-50">
+                          <th className="text-left px-4 py-2 text-xs font-mono text-zinc-400">Adresse</th>
+                          <th className="text-right px-4 py-2 text-xs font-mono text-zinc-400">Dist.</th>
+                          <th className="text-right px-4 py-2 text-xs font-mono text-zinc-400">Date</th>
+                          <th className="text-right px-4 py-2 text-xs font-mono text-zinc-400">Surface</th>
+                          <th className="text-right px-4 py-2 text-xs font-mono text-zinc-400">€/m²</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {comps.map((c, i) => (
+                          <tr key={i} className="border-b border-zinc-100 last:border-0 hover:bg-zinc-50">
+                            <td className="px-4 py-2 text-sm">{c.address}</td>
+                            <td className="px-4 py-2 text-sm text-right font-mono text-zinc-500">{c.distance_m}m</td>
+                            <td className="px-4 py-2 text-sm text-right font-mono text-zinc-500">{String(c.date).slice(0, 10)}</td>
+                            <td className="px-4 py-2 text-sm text-right font-mono">{c.surface?.toFixed(0)} m²</td>
+                            <td className="px-4 py-2 text-sm text-right font-mono font-medium">{formatPrice(c.price_per_sqm)} €</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
             )}
 
@@ -345,13 +428,23 @@ export default function ListingAnalyzer() {
             )}
 
             {/* Actions */}
-            <div className="flex items-center gap-4 pt-4 border-t border-zinc-200">
+            <div className="flex items-center gap-4 pt-4 border-t border-zinc-200 flex-wrap">
               <Button
                 onClick={handleLaunchEstimation}
                 className="rounded-none h-12 px-8 bg-black text-white hover:bg-zinc-800 font-heading font-medium"
                 data-testid="launch-full-estimation-btn"
               >
                 Lancer une estimation complète <ArrowRight className="w-4 h-4 ml-2" />
+              </Button>
+              <Button
+                variant="outline"
+                onClick={handleDownloadPdf}
+                disabled={pdfLoading || !result?.analysis_id}
+                className="rounded-none h-12 px-6"
+                data-testid="listing-download-pdf-btn"
+              >
+                {pdfLoading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Download className="w-4 h-4 mr-2" />}
+                Télécharger le rapport PDF
               </Button>
               <Button
                 variant="outline"

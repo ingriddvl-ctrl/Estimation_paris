@@ -1,0 +1,54 @@
+{
+  "summary": "Comprehensive testing of new valuation engine features completed. All backend APIs (12/12) passed. Frontend fully operational with new features: micro-score panel, search radius display, distance column in comparables, heatmap layer, and PDF export.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "passed_tests": [
+    "Backend: POST /api/valuation/estimate returns 200 with valid payload",
+    "Backend: POST /api/valuation/estimate returns search_radius_m in market_data (200m for test location)",
+    "Backend: POST /api/valuation/estimate returns micro_score with all fields (score, detail, local_premium_pct, density_300m, price_homogeneity, local_median_sqm)",
+    "Backend: POST /api/valuation/estimate comparables have distance_m field",
+    "Backend: POST /api/valuation/estimate base_source mentions 'médiane pondérée' not 'Moyenne parisienne'",
+    "Backend: GET /api/report/pdf/{valuation_id} returns valid PDF for existing valuation",
+    "Backend: GET /api/report/pdf/nonexistent returns 404",
+    "Backend: GET /api/listing/report/pdf/nonexistent returns 404",
+    "Backend: GET /api/address/search returns results",
+    "Backend: GET /api/valuation/{id} returns valuation data",
+    "Backend: GET /api/valuations returns list of valuations",
+    "Backend: Server health check passes",
+    "Frontend: Landing page loads with all navigation links (nav-analyze, nav-history, nav-settings)",
+    "Frontend: Landing page has 'Analyser une fiche agence' button",
+    "Frontend: /analyze page loads with upload zone (data-testid='listing-upload-zone')",
+    "Frontend: /analyze page has file input and analyze button",
+    "Frontend: Results page shows micro-score panel in Hypothèses tab with density_300m and local_premium_pct",
+    "Frontend: Results page shows search radius info in Comparables tab ('rayon de 200m — médiane pondérée')",
+    "Frontend: Results page Comparables tab shows distance column (11m for closest comparable)",
+    "Frontend: Results page Comparables map shows heatmap layer and search radius circle",
+    "Frontend: Results page PDF download button works and downloads PDF file"
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_valuation_engine.py",
+    "/app/test_reports/pytest/pytest_results_iteration4.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Note: Existing saved valuations in MongoDB don't have new fields (search_radius_m, distance_m, micro_score) since they were created with old algorithm. Only fresh estimations have these fields - this is expected behavior."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_valuation_engine.py"
+  ],
+  "success_rate": {
+    "backend": "100% (12/12 tests passed)",
+    "frontend": "100% (all features working correctly)"
+  },
+  "seed_data_creation": "Created fresh valuation ID: a4278456-d469-4b25-845b-eccb2d32f8ff with new engine fields for testing",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "New valuation engine features tested: 1) Progressive radius DVF search (200m→300m→500m→800m), 2) Weighted median price (distance+freshness), 3) Micro-score computation with density_300m and local_premium_pct, 4) search_radius_m and distance_m fields in response, 5) base_source mentions 'médiane pondérée'. Fresh valuation ID a4278456-d469-4b25-845b-eccb2d32f8ff can be used for future testing with new fields. Old valuation ca781754-4fdc-45bb-8a46-8faac27c9b07 doesn't have new fields."
+}
