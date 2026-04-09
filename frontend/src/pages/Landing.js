@@ -1,6 +1,6 @@
 import { useNavigate, Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
-import { MapPin, BarChart3, Shield, Calculator, Clock, Share2 } from "lucide-react";
+import { MapPin, BarChart3, Shield, Calculator, Clock, Share2, FileSearch } from "lucide-react";
 
 const features = [
   { icon: MapPin, title: "Données DVF réelles", desc: "Transactions vérifiées des 5 dernières années dans votre rue" },
@@ -26,6 +26,9 @@ export default function Landing() {
             <span className="font-heading font-bold text-lg tracking-tight">VALORISATEUR</span>
           </div>
           <nav className="flex items-center gap-6">
+            <Link to="/analyze" className="text-sm text-zinc-500 hover:text-black transition-colors" data-testid="nav-analyze">
+              Analyser une fiche
+            </Link>
             <Link to="/history" className="text-sm text-zinc-500 hover:text-black transition-colors" data-testid="nav-history">
               Historique
             </Link>
@@ -50,13 +53,21 @@ export default function Landing() {
           <p className="text-base sm:text-lg text-zinc-500 leading-relaxed mb-10 max-w-xl animate-fade-in-up stagger-2" data-testid="hero-subtitle">
             Connecté aux bases publiques DVF, cadastre et INSEE. Chaque critère est pondéré, chaque ajustement est transparent et modifiable.
           </p>
-          <div className="flex items-center gap-4 animate-fade-in-up stagger-3">
+          <div className="flex items-center gap-4 flex-wrap animate-fade-in-up stagger-3">
             <Button
               onClick={() => navigate("/new")}
               className="h-12 px-8 bg-black text-white hover:bg-zinc-800 rounded-none font-heading font-medium text-sm tracking-wide"
               data-testid="start-valuation-btn"
             >
               Nouvelle estimation
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => navigate("/analyze")}
+              className="h-12 px-8 rounded-none border-zinc-300 hover:bg-zinc-50 font-heading font-medium text-sm tracking-wide"
+              data-testid="analyze-listing-btn"
+            >
+              <FileSearch className="w-4 h-4 mr-2" /> Analyser une fiche agence
             </Button>
             <Button
               variant="outline"

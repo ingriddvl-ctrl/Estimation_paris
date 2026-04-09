@@ -946,6 +946,531 @@ async def get_market_listings(
     listings.sort(key=lambda x: x.get("date", ""), reverse=True)
     return listings
 
+# ─── Listing Sheet Analysis (AI-powered) ───
+
+EXTRACTION_PROMPT = """Tu es un expert en immobilier parisien. Analyse cette fiche d'agence immobilière et extrais TOUTES les informations disponibles dans un JSON structuré.
+
+IMPORTANT: 
+- Extrais EXACTEMENT ce qui est écrit, sans inventer de données
+- Pour les champs manquants, mets null
+- Le prix demandé doit être le prix HAI (honoraires inclus) si disponible
+- Distingue bien prix du bien et prix du parking si séparé
+
+Retourne UNIQUEMENT un JSON valide avec cette structure (pas de texte avant ou après):
+{
+  "extracted": {
+    "address": "adresse complète ou null",
+    "postal_code": "code postal",
+    "arrondissement": "numéro d'arrondissement",
+    "neighborhood": "quartier mentionné ou null",
+    "asking_price": prix demandé en euros (nombre),
+    "asking_price_detail": "détail (HAI, hors honoraires, etc.)",
+    "price_per_sqm_asked": prix au m² demandé ou null,
+    "parking_price": prix du parking si séparé ou 0,
+    "surface_carrez": surface loi carrez en m² (nombre),
+    "surface_habitable": surface habitable ou null,
+    "rooms": nombre de pièces principales (nombre),
+    "bedrooms": nombre de chambres (nombre),
+    "bathrooms": nombre de salles de bain/eau (nombre),
+    "property_type": "appartement/duplex/triplex/loft/etc",
+    "floor": étage principal (nombre),
+    "total_floors": nombre d'étages de l'immeuble ou null,
+    "elevator": true/false/null,
+    "exposure": "nord/sud/est/ouest/multi/null",
+    "view": "description de la vue ou null",
+    "exterior_type": "balcon/terrasse/jardin/loggia/aucun",
+    "exterior_surface": surface extérieure en m² ou 0,
+    "exterior_count": nombre de balcons/terrasses ou 0,
+    "ceiling_height": hauteur sous plafond en mètres ou null,
+    "parking": "type de parking ou aucun",
+    "cave": true/false,
+    "cave_count": nombre de caves ou 0,
+    "general_state": "a_renover/rafraichissement/bon_etat/refait_neuf/luxe",
+    "construction_year": année de construction ou null,
+    "building_type": "pierre_taille/brique/beton/moderne/standing",
+    "dpe": "A/B/C/D/E/F/G ou null",
+    "dpe_value": valeur kWh/m²/an ou null,
+    "ges": "A/B/C/D/E/F/G ou null",
+    "annual_charges": charges annuelles en euros ou 0,
+    "property_tax": taxe foncière annuelle ou 0,
+    "total_lots": nombre de lots copro ou null,
+    "concierge": true/false/null,
+    "heating": "type de chauffage",
+    "windows": "type de vitrage",
+    "agency_name": "nom de l'agence",
+    "agency_fees_detail": "détail des honoraires",
+    "notable_features": ["liste des points forts mentionnés"],
+    "notable_defects": ["liste des points faibles ou travaux à prévoir"]
+  },
+  "summary": "résumé en 2-3 phrases du bien"
+}"""
+
+ANALYSIS_PROMPT_TEMPLATE = """Tu es un expert en valorisation immobilière parisienne. Tu as extrait les caractéristiques suivantes d'une fiche d'agence:
+
+{extracted_json}
+
+Le prix demandé est de {asking_price}€ pour {surface}m² soit {price_sqm}€/m².
+
+La moyenne des transactions DVF récentes dans l'arrondissement est d'environ {arr_avg}€/m².
+
+ANALYSE DE PRIX — Réponds en JSON UNIQUEMENT:
+{{
+  "price_opinion": "sous-évalué" / "prix_juste" / "surévalué" / "très_surévalué",
+  "price_opinion_icon": "--" / "-" / "=" / "+" / "++",
+  "estimated_fair_price_low": estimation basse (nombre),
+  "estimated_fair_price_high": estimation haute (nombre),
+  "estimated_fair_price_sqm": estimation prix/m² juste (nombre),
+  "arguments_for": ["3-5 arguments qui justifient un prix élevé"],
+  "arguments_against": ["3-5 arguments qui justifient un prix plus bas"],
+  "negotiation_tips": ["2-3 conseils de négociation spécifiques à ce bien"],
+  "verdict": "paragraphe de 4-5 lignes avec ton verdict argumenté sur le prix demandé, en étant direct et factuel"
+}}"""
+
+@api_router.post("/listing/analyze")
+async def analyze_listing(file: UploadFile = File(...)):
+    """Analyze a real estate agency listing sheet using AI"""
+    from emergentintegrations.llm.chat import LlmChat, UserMessage, FileContentWithMimeType
+    import tempfile, json as json_mod
+
+    ext = file.filename.split(".")[-1].lower() if "." in file.filename else "bin"
+    if ext not in ["pdf", "jpg", "jpeg", "png", "webp"]:
+        raise HTTPException(status_code=400, detail="Format supporté : PDF, JPG, PNG")
+
+    file_data = await file.read()
+    if len(file_data) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Fichier trop volumineux (max 20Mo)")
+
+    # Save to temp file for Gemini
+    mime_map = {"pdf": "application/pdf", "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp"}
+    mime = mime_map.get(ext, "application/octet-stream")
+
+    with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as tmp:
+        tmp.write(file_data)
+        tmp_path = tmp.name
+
+    try:
+        api_key = os.environ.get("EMERGENT_LLM_KEY")
+        if not api_key:
+            raise HTTPException(status_code=500, detail="LLM key not configured")
+
+        # Step 1: Extract data from the listing
+        chat = LlmChat(
+            api_key=api_key,
+            session_id=f"listing-{uuid.uuid4()}",
+            system_message="Tu es un expert immobilier parisien. Tu extrais des données structurées de fiches d'agences immobilières. Réponds UNIQUEMENT en JSON valide."
+        ).with_model("gemini", "gemini-2.5-flash")
+
+        file_attachment = FileContentWithMimeType(file_path=tmp_path, mime_type=mime)
+        extraction_msg = UserMessage(text=EXTRACTION_PROMPT, file_contents=[file_attachment])
+        extraction_response = await chat.send_message(extraction_msg)
+
+        # Parse JSON from response
+        raw = extraction_response.strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
+            raw = raw.rsplit("```", 1)[0]
+        extracted = json_mod.loads(raw)
+        ext_data = extracted.get("extracted", extracted)
+        summary = extracted.get("summary", "")
+
+        # Step 2: Price analysis
+        asking_price = ext_data.get("asking_price", 0) or 0
+        surface = ext_data.get("surface_carrez", 0) or ext_data.get("surface_habitable", 0) or 50
+        price_sqm = round(asking_price / max(surface, 1)) if asking_price else 0
+        postal = ext_data.get("postal_code", "75016")
+        arr_avg = ARRONDISSEMENT_AVG_PRICES.get(postal, 10500)
+
+        analysis_prompt = ANALYSIS_PROMPT_TEMPLATE.format(
+            extracted_json=json_mod.dumps(ext_data, ensure_ascii=False, indent=2),
+            asking_price=f"{asking_price:,.0f}",
+            surface=surface,
+            price_sqm=f"{price_sqm:,.0f}",
+            arr_avg=f"{arr_avg:,.0f}"
+        )
+
+        chat2 = LlmChat(
+            api_key=api_key,
+            session_id=f"analysis-{uuid.uuid4()}",
+            system_message="Tu es un expert en valorisation immobilière. Réponds UNIQUEMENT en JSON valide. Sois direct, factuel et sans complaisance."
+        ).with_model("gemini", "gemini-2.5-flash")
+
+        analysis_response = await chat2.send_message(UserMessage(text=analysis_prompt))
+        raw2 = analysis_response.strip()
+        if raw2.startswith("```"):
+            raw2 = raw2.split("\n", 1)[1] if "\n" in raw2 else raw2[3:]
+            raw2 = raw2.rsplit("```", 1)[0]
+        analysis = json_mod.loads(raw2)
+
+        return {
+            "status": "success",
+            "extracted": ext_data,
+            "summary": summary,
+            "analysis": analysis,
+            "market_reference": {
+                "arrondissement_avg_sqm": arr_avg,
+                "postal_code": postal,
+                "asking_price_sqm": price_sqm,
+            }
+        }
+
+    except json_mod.JSONDecodeError as e:
+        logger.error(f"JSON parse error: {e}\nRaw: {raw[:500] if 'raw' in dir() else 'N/A'}")
+        raise HTTPException(status_code=422, detail="L'IA n'a pas retourné un JSON valide. Réessayez.")
+    except Exception as e:
+        logger.error(f"Listing analysis error: {e}")
+        raise HTTPException(status_code=500, detail=f"Erreur d'analyse: {str(e)}")
+    finally:
+        os.unlink(tmp_path)
+
+# ─── PDF Report Generation ───
+
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import mm, cm
+from reportlab.lib.colors import HexColor, black, white
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, HRFlowable
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+import io
+
+# Color palette
+PDF_BLACK = HexColor("#18181B")
+PDF_GRAY = HexColor("#71717A")
+PDF_LIGHT = HexColor("#F4F4F5")
+PDF_GREEN = HexColor("#008A00")
+PDF_RED = HexColor("#E60000")
+PDF_WHITE = white
+
+def build_pdf_styles():
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(name="H1", fontSize=22, leading=26, textColor=PDF_BLACK, spaceAfter=6))
+    styles.add(ParagraphStyle(name="H2", fontSize=14, leading=18, textColor=PDF_BLACK, spaceAfter=4, spaceBefore=14))
+    styles.add(ParagraphStyle(name="H3", fontSize=11, leading=14, textColor=PDF_BLACK, spaceAfter=3, spaceBefore=8))
+    styles.add(ParagraphStyle(name="Body", fontSize=9, leading=13, textColor=PDF_GRAY))
+    styles.add(ParagraphStyle(name="BodyBold", fontSize=9, leading=13, textColor=PDF_BLACK, fontName="Helvetica-Bold"))
+    styles.add(ParagraphStyle(name="Small", fontSize=7.5, leading=10, textColor=PDF_GRAY))
+    styles.add(ParagraphStyle(name="SmallBold", fontSize=7.5, leading=10, textColor=PDF_BLACK, fontName="Helvetica-Bold"))
+    styles.add(ParagraphStyle(name="Price", fontSize=28, leading=32, textColor=PDF_BLACK, fontName="Helvetica-Bold"))
+    styles.add(ParagraphStyle(name="Caption", fontSize=8, leading=10, textColor=PDF_GRAY, alignment=TA_CENTER))
+    styles.add(ParagraphStyle(name="Footer", fontSize=7, leading=9, textColor=PDF_GRAY, alignment=TA_CENTER))
+    return styles
+
+def fmt_price(n):
+    if not n: return "—"
+    return f"{int(n):,}".replace(",", " ") + " \u20ac"
+
+def fmt_pct(n):
+    if not n: return "0%"
+    return f"{'+' if n > 0 else ''}{n:.1f}%"
+
+def _header_footer(canvas, doc, address, date_str):
+    canvas.saveState()
+    w, h = A4
+    # Header line
+    canvas.setStrokeColor(HexColor("#E4E4E7"))
+    canvas.setLineWidth(0.5)
+    canvas.line(20*mm, h - 18*mm, w - 20*mm, h - 18*mm)
+    canvas.setFont("Helvetica-Bold", 9)
+    canvas.setFillColor(PDF_BLACK)
+    canvas.drawString(20*mm, h - 15*mm, "VALORISATEUR")
+    canvas.setFont("Helvetica", 7)
+    canvas.setFillColor(PDF_GRAY)
+    canvas.drawRightString(w - 20*mm, h - 15*mm, f"Rapport d'estimation — {date_str}")
+    # Footer
+    canvas.line(20*mm, 15*mm, w - 20*mm, 15*mm)
+    canvas.setFont("Helvetica", 6.5)
+    canvas.drawString(20*mm, 10*mm, f"{address}")
+    canvas.drawRightString(w - 20*mm, 10*mm, f"Page {doc.page}")
+    canvas.restoreState()
+
+
+@api_router.get("/report/pdf/{valuation_id}")
+async def generate_pdf_report(valuation_id: str):
+    doc_data = await db.valuations.find_one({"id": valuation_id}, {"_id": 0})
+    if not doc_data:
+        raise HTTPException(status_code=404, detail="Estimation introuvable")
+
+    req = doc_data.get("request", {})
+    loc = req.get("location", {})
+    chars = req.get("characteristics", {})
+    cond = req.get("condition", {})
+    bldg = req.get("building", {})
+    legal = req.get("legal", {})
+    mkt = doc_data.get("market_data", {})
+    pos = mkt.get("market_position", {})
+    adjustments = doc_data.get("adjustments", [])
+    comparables = doc_data.get("comparables", [])
+    risks = doc_data.get("risks", [])
+
+    address = loc.get("address", "Adresse inconnue")
+    date_str = doc_data.get("created_at", "")[:10]
+
+    styles = build_pdf_styles()
+    buffer = io.BytesIO()
+    pdf = SimpleDocTemplate(
+        buffer, pagesize=A4,
+        leftMargin=20*mm, rightMargin=20*mm,
+        topMargin=24*mm, bottomMargin=22*mm,
+    )
+
+    story = []
+
+    # ──── PAGE 1: Cover ────
+    story.append(Spacer(1, 30*mm))
+    story.append(Paragraph("RAPPORT D'ESTIMATION", styles["H1"]))
+    story.append(Paragraph("IMMOBILIÈRE", styles["H1"]))
+    story.append(Spacer(1, 8*mm))
+    story.append(HRFlowable(width="100%", thickness=1, color=PDF_BLACK))
+    story.append(Spacer(1, 6*mm))
+    story.append(Paragraph(address, styles["H2"]))
+    story.append(Paragraph(f"{loc.get('postal_code', '')} {loc.get('city', 'Paris')}", styles["Body"]))
+    story.append(Spacer(1, 10*mm))
+
+    # Price summary table
+    cover_data = [
+        ["ESTIMATION", "FOURCHETTE", "PRIX/M²", "CONFIANCE"],
+        [
+            fmt_price(doc_data.get("price_median")),
+            f"{fmt_price(doc_data.get('price_low'))} — {fmt_price(doc_data.get('price_high'))}",
+            fmt_price(doc_data.get("price_per_sqm_median")),
+            f"{doc_data.get('confidence_score', 0)}/100",
+        ],
+    ]
+    cover_table = Table(cover_data, colWidths=[42*mm, 52*mm, 38*mm, 30*mm])
+    cover_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), PDF_BLACK),
+        ("TEXTCOLOR", (0, 0), (-1, 0), PDF_WHITE),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, 0), 7),
+        ("FONTNAME", (0, 1), (-1, 1), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 1), (-1, 1), 11),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("BOTTOMPADDING", (0, 0), (-1, 0), 6),
+        ("TOPPADDING", (0, 1), (-1, 1), 10),
+        ("BOTTOMPADDING", (0, 1), (-1, 1), 10),
+        ("GRID", (0, 0), (-1, -1), 0.5, HexColor("#E4E4E7")),
+    ]))
+    story.append(cover_table)
+    story.append(Spacer(1, 8*mm))
+
+    # Property characteristics summary
+    chars_items = [
+        ("Surface Carrez", f"{chars.get('surface_carrez', '?')} m²"),
+        ("Pièces / Chambres", f"{chars.get('rooms', '?')} / {chars.get('bedrooms', '?')}"),
+        ("Étage", f"{loc.get('floor', '?')} {'(avec ascenseur)' if bldg.get('elevator') else '(sans ascenseur)'}"),
+        ("Exposition", chars.get("exposure", "?").capitalize()),
+        ("Vue", chars.get("view", "?").replace("_", " ").capitalize()),
+        ("DPE / GES", f"{cond.get('dpe', '?')} / {cond.get('ges', '?')}"),
+        ("État général", cond.get("general_state", "?").replace("_", " ").capitalize()),
+        ("Immeuble", bldg.get("building_type", "?").replace("_", " ").capitalize()),
+        ("Parking", chars.get("parking", "aucun").replace("_", " ").capitalize()),
+    ]
+    ext_type = chars.get('exterior_type', 'aucun')
+    ext_surf = chars.get('exterior_surface', 0)
+    ext_label = f"{ext_type} ({ext_surf} m²)" if ext_surf else ext_type
+    chars_items.append(("Extérieur", ext_label))
+    char_data = [["CARACTÉRISTIQUE", "VALEUR"]]
+    for label, val in chars_items:
+        char_data.append([label, val])
+    char_table = Table(char_data, colWidths=[80*mm, 82*mm])
+    char_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), PDF_LIGHT),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, 0), 7),
+        ("FONTSIZE", (0, 1), (-1, -1), 8),
+        ("FONTNAME", (0, 1), (0, -1), "Helvetica"),
+        ("FONTNAME", (1, 1), (1, -1), "Helvetica-Bold"),
+        ("TEXTCOLOR", (0, 1), (0, -1), PDF_GRAY),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("GRID", (0, 0), (-1, -1), 0.3, HexColor("#E4E4E7")),
+    ]))
+    story.append(Paragraph("Caractéristiques du bien", styles["H2"]))
+    story.append(char_table)
+
+    # Market position
+    if pos:
+        story.append(Spacer(1, 6*mm))
+        story.append(Paragraph("Position sur le marché", styles["H2"]))
+        mp_text = f"Votre bien est estimé à {fmt_price(pos.get('estimated_sqm'))}/m², "
+        mp_text += f"soit {fmt_pct(pos.get('diff_pct'))} par rapport à la moyenne de l'arrondissement ({fmt_price(pos.get('arr_avg'))}/m²). "
+        mp_text += f"Position : <b>{pos.get('label', '=')}</b> — {pos.get('description', '')}"
+        story.append(Paragraph(mp_text, styles["Body"]))
+
+    story.append(Spacer(1, 4*mm))
+    story.append(Paragraph(f"Source des données : {mkt.get('base_source', 'DVF Cerema')} — Période : {mkt.get('comparables_period', '2020-2025')} — {mkt.get('total_comparables', 0)} transactions analysées", styles["Small"]))
+
+    story.append(PageBreak())
+
+    # ──── PAGE 2: Adjustments detail ────
+    story.append(Paragraph("Décomposition du prix", styles["H1"]))
+    story.append(Spacer(1, 3*mm))
+    story.append(Paragraph(f"Prix de base médian : {fmt_price(mkt.get('base_price_sqm'))}/m² (source : {mkt.get('base_source', 'DVF')})", styles["BodyBold"]))
+    story.append(Spacer(1, 4*mm))
+
+    if adjustments:
+        adj_data = [["CRITÈRE", "IMPACT", "DÉTAIL"]]
+        for adj in adjustments:
+            atype = adj.get("type", "pct")
+            val = adj.get("value", 0)
+            if atype == "pct":
+                impact_str = fmt_pct(val)
+            elif atype == "flat":
+                impact_str = fmt_price(val)
+            elif atype == "flat_per_sqm":
+                impact_str = f"{fmt_price(val)}/m²"
+            else:
+                impact_str = str(val)
+            adj_data.append([adj.get("name", ""), impact_str, adj.get("detail", "")])
+
+        # Summary row
+        adj_data.append(["TOTAL AJUSTEMENTS", fmt_pct(mkt.get("adjustment_pct", 0)) + (f" + {fmt_price(mkt.get('adjustment_flat', 0))}" if mkt.get("adjustment_flat") else ""), ""])
+
+        adj_table = Table(adj_data, colWidths=[45*mm, 35*mm, 82*mm])
+        adj_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), PDF_BLACK),
+            ("TEXTCOLOR", (0, 0), (-1, 0), PDF_WHITE),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, 0), 7),
+            ("FONTSIZE", (0, 1), (-1, -1), 8),
+            ("FONTNAME", (0, 1), (0, -1), "Helvetica-Bold"),
+            ("FONTNAME", (1, 1), (1, -1), "Helvetica-Bold"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("GRID", (0, 0), (-1, -1), 0.3, HexColor("#E4E4E7")),
+            # Last row = total
+            ("BACKGROUND", (0, -1), (-1, -1), PDF_LIGHT),
+            ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
+        ]))
+        story.append(adj_table)
+    else:
+        story.append(Paragraph("Aucun ajustement appliqué.", styles["Body"]))
+
+    story.append(Spacer(1, 6*mm))
+
+    # Hypotheses detail
+    story.append(Paragraph("Hypothèses détaillées", styles["H2"]))
+    story.append(Spacer(1, 2*mm))
+    for adj in adjustments:
+        hyp = adj.get("hypothesis", "")
+        if hyp:
+            story.append(Paragraph(f"<b>{adj.get('name', '')}</b> ({fmt_pct(adj.get('value', 0)) if adj.get('type') == 'pct' else fmt_price(adj.get('value', 0))})", styles["H3"]))
+            story.append(Paragraph(hyp, styles["Body"]))
+            story.append(Spacer(1, 2*mm))
+
+    story.append(PageBreak())
+
+    # ──── PAGE 3: Comparables ────
+    story.append(Paragraph("Transactions comparables (DVF)", styles["H1"]))
+    story.append(Spacer(1, 3*mm))
+    story.append(Paragraph(f"{len(comparables)} transactions réelles trouvées dans un rayon de 500m", styles["Body"]))
+    story.append(Spacer(1, 4*mm))
+
+    if comparables:
+        comp_display = comparables[:20]
+        comp_data = [["DATE", "ADRESSE", "SURFACE", "PRIX", "PRIX/M²"]]
+        for c in comp_display:
+            comp_data.append([
+                str(c.get("date", ""))[:10],
+                str(c.get("address", ""))[:35],
+                f"{c.get('surface', 0):.0f} m²",
+                fmt_price(c.get("price")),
+                fmt_price(c.get("price_per_sqm")),
+            ])
+        comp_table = Table(comp_data, colWidths=[22*mm, 60*mm, 22*mm, 30*mm, 28*mm])
+        comp_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), PDF_BLACK),
+            ("TEXTCOLOR", (0, 0), (-1, 0), PDF_WHITE),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, 0), 6.5),
+            ("FONTSIZE", (0, 1), (-1, -1), 7),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+            ("GRID", (0, 0), (-1, -1), 0.3, HexColor("#E4E4E7")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [PDF_WHITE, PDF_LIGHT]),
+        ]))
+        story.append(comp_table)
+    else:
+        story.append(Paragraph("Aucune transaction comparable trouvée.", styles["Body"]))
+
+    story.append(Spacer(1, 6*mm))
+
+    # ──── Risks ────
+    story.append(Paragraph("Analyse des risques", styles["H2"]))
+    story.append(Spacer(1, 3*mm))
+
+    if risks:
+        for r in risks:
+            level = r.get("level", "info")
+            color_hex = "#E60000" if level == "critical" else "#F59E0B" if level == "warning" else "#71717A"
+            story.append(Paragraph(f'<font color="{color_hex}">●</font> <b>{r.get("type", "")}</b> — {r.get("detail", "")}', styles["Body"]))
+            story.append(Spacer(1, 1.5*mm))
+    else:
+        story.append(Paragraph("Aucun risque majeur identifié.", styles["Body"]))
+
+    story.append(Spacer(1, 10*mm))
+
+    # Legal information
+    story.append(Paragraph("Informations légales", styles["H2"]))
+    legal_items = [
+        ("Type de propriété", legal.get("ownership_type", "pleine_propriete").replace("_", " ").capitalize()),
+        ("Taxe foncière", fmt_price(legal.get("property_tax")) if legal.get("property_tax") else "Non renseignée"),
+        ("Charges annuelles", fmt_price(bldg.get("annual_charges")) if bldg.get("annual_charges") else "Non renseignées"),
+        ("Syndic", bldg.get("syndic_type", "?").capitalize()),
+        ("Lots copropriété", str(bldg.get("total_lots", "?"))),
+    ]
+    for label, val in legal_items:
+        story.append(Paragraph(f"<b>{label}</b> : {val}", styles["Body"]))
+
+    story.append(PageBreak())
+
+    # ──── PAGE 4: Disclaimer & methodology ────
+    story.append(Paragraph("Méthodologie", styles["H1"]))
+    story.append(Spacer(1, 4*mm))
+    methodology_text = """Cette estimation repose sur une méthodologie transparente en 4 étapes :
+
+<b>1. Collecte des données</b> — Les transactions immobilières réelles sont récupérées via l'API DVF du Cerema (Demandes de Valeurs Foncières), base officielle alimentée par la DGFiP. Seules les ventes depuis 2020 dans un rayon de 500m sont retenues.
+
+<b>2. Calcul du prix de base</b> — La médiane tronquée (trimmed median) des prix au m² est calculée en excluant les 10% de valeurs extrêmes (hautes et basses) pour éliminer les transactions atypiques.
+
+<b>3. Ajustements</b> — Des coefficients de pondération sont appliqués pour chaque critère (étage, exposition, DPE, vue, état, etc.). Ces coefficients sont basés sur les études notariales et les recommandations d'experts. Un plafonnement des ajustements cumulés est appliqué pour éviter toute surestimation.
+
+<b>4. Fourchette de prix</b> — Le prix final est présenté avec une fourchette de ±8% (haute confiance) à ±12% (confiance modérée), selon le nombre de comparables disponibles."""
+
+    story.append(Paragraph(methodology_text, styles["Body"]))
+    story.append(Spacer(1, 8*mm))
+
+    story.append(Paragraph("Avertissement", styles["H2"]))
+    disclaimer = """Ce rapport est fourni à titre indicatif et ne constitue pas une expertise immobilière au sens de la Charte de l'Expertise en Évaluation Immobilière. Les données utilisées proviennent de sources publiques (DVF, Géorisques, ADEME) et peuvent comporter des inexactitudes. Cette estimation ne saurait engager la responsabilité de ses auteurs. Pour toute transaction immobilière, nous recommandons de consulter un expert agréé, un notaire ou un agent immobilier qualifié."""
+    story.append(Paragraph(disclaimer, styles["Body"]))
+    story.append(Spacer(1, 6*mm))
+    story.append(Paragraph(f"Rapport généré le {datetime.now(timezone.utc).strftime('%d/%m/%Y à %H:%M')} UTC", styles["Small"]))
+
+    # Build PDF
+    def on_page(canvas, doc):
+        _header_footer(canvas, doc, address, date_str)
+
+    pdf.build(story, onFirstPage=on_page, onLaterPages=on_page)
+    buffer.seek(0)
+
+    safe_address = address.replace(" ", "_").replace("/", "-")[:50]
+    filename = f"Estimation_{safe_address}_{date_str}.pdf"
+
+    return Response(
+        content=buffer.getvalue(),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
+
 app.include_router(api_router)
 
 app.add_middleware(

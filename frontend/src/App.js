@@ -8,6 +8,7 @@ import History from "@/pages/History";
 import SharedView from "@/pages/SharedView";
 import Settings from "@/pages/Settings";
 import Simulator from "@/pages/Simulator";
+import ListingAnalyzer from "@/pages/ListingAnalyzer";
 
 function App() {
   return (
@@ -22,6 +23,7 @@ function App() {
           <Route path="/history" element={<History />} />
           <Route path="/share/:shareId" element={<SharedView />} />
           <Route path="/settings" element={<Settings />} />
+          <Route path="/analyze" element={<ListingAnalyzer />} />
         </Routes>
       </BrowserRouter>
     </div>

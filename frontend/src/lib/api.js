@@ -27,4 +27,27 @@ export const api = {
   downloadDocument: (fileId) => axios.get(`${API}/documents/download/${fileId}`, { responseType: "blob" }).then(r => r),
   deleteDocument: (fileId) => axios.delete(`${API}/documents/${fileId}`).then(r => r.data),
   getMarketListings: (lat, lon, radius = 800) => axios.get(`${API}/market/listings`, { params: { lat, lon, radius } }).then(r => r.data),
+  analyzeListing: (file) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    return axios.post(`${API}/listing/analyze`, formData, {
+      headers: { "Content-Type": "multipart/form-data" },
+      timeout: 120000,
+    }).then(r => r.data);
+  },
+  downloadPdfReport: (valuationId) => {
+    return axios.get(`${API}/report/pdf/${valuationId}`, { responseType: "blob" }).then(r => {
+      const url = window.URL.createObjectURL(new Blob([r.data], { type: "application/pdf" }));
+      const disposition = r.headers["content-disposition"] || "";
+      const match = disposition.match(/filename="?([^"]+)"?/);
+      const filename = match ? match[1] : `Estimation_${valuationId}.pdf`;
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    });
+  },
 };

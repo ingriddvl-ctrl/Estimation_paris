@@ -4,7 +4,7 @@ import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
-import { ArrowLeft, Calculator, Share2, Copy, MapPin, TrendingUp, Shield, BarChart3, Loader2, Lightbulb, ShoppingBag, FileText, Brain } from "lucide-react";
+import { ArrowLeft, Calculator, Share2, Copy, MapPin, TrendingUp, Shield, BarChart3, Loader2, Lightbulb, ShoppingBag, FileText, Brain, Download } from "lucide-react";
 import WaterfallChart from "@/components/WaterfallChart";
 import ComparablesMap from "@/components/ComparablesMap";
 import LocationScores from "@/components/LocationScores";
@@ -25,6 +25,7 @@ export default function Results() {
   const navigate = useNavigate();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [pdfLoading, setPdfLoading] = useState(false);
 
   useEffect(() => {
     api.getValuation(id).then(setData).catch(() => toast.error("Estimation introuvable")).finally(() => setLoading(false));
@@ -35,6 +36,18 @@ export default function Results() {
     const url = `${window.location.origin}/share/${data.share_id}`;
     navigator.clipboard.writeText(url);
     toast.success("Lien copié !");
+  };
+
+  const handleDownloadPdf = async () => {
+    setPdfLoading(true);
+    try {
+      await api.downloadPdfReport(id);
+      toast.success("Rapport PDF téléchargé !");
+    } catch {
+      toast.error("Erreur lors de la génération du PDF");
+    } finally {
+      setPdfLoading(false);
+    }
   };
 
   if (loading) return (
@@ -66,6 +79,9 @@ export default function Results() {
             <span className="font-heading font-bold text-lg tracking-tight">VALORISATEUR</span>
           </Link>
           <div className="flex items-center gap-3">
+            <Button variant="outline" size="sm" onClick={handleDownloadPdf} disabled={pdfLoading} className="rounded-none text-xs" data-testid="download-pdf-btn">
+              {pdfLoading ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <Download className="w-3.5 h-3.5 mr-1.5" />} PDF
+            </Button>
             <Button variant="outline" size="sm" onClick={copyShareLink} className="rounded-none text-xs" data-testid="share-btn">
               <Share2 className="w-3.5 h-3.5 mr-1.5" /> Partager
             </Button>
