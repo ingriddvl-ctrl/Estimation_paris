@@ -181,14 +181,41 @@ async def scrape_bienici_listings(postal_code: str, surface_min: int = 20, surfa
         filters["zoneIdsByInseeCode"] = {insee: zone_ids}
 
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Referer": "https://www.bienici.com/recherche/achat/paris",
+            "Origin": "https://www.bienici.com",
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
+            "Sec-Ch-Ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Platform": '"Windows"',
+        }
+
+        # Try the search API first
+        search_url = "https://www.bienici.com/realEstateAds.json"
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
             resp = await client.get(
-                f"https://www.bienici.com/realEstateAds.json",
+                search_url,
                 params={"filters": json.dumps(filters)},
-                headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)", "Accept": "application/json"}
+                headers=headers,
             )
+            logger.info(f"BienIci response status: {resp.status_code} for {postal_code}")
             if resp.status_code != 200:
-                return []
+                # Try alternative API endpoint
+                alt_url = f"https://res.bienici.com/realEstateAds.json"
+                resp = await client.get(
+                    alt_url,
+                    params={"filters": json.dumps(filters)},
+                    headers={**headers, "Origin": "https://res.bienici.com", "Referer": "https://res.bienici.com/"},
+                )
+                if resp.status_code != 200:
+                    logger.warning(f"BienIci both endpoints failed: {resp.status_code}")
+                    return []
 
             data = resp.json()
             ads = data.get("realEstateAds", [])
@@ -301,50 +328,143 @@ async def lookup_castorus_url(listing_url: str) -> Optional[Dict]:
     """
     Try to look up a listing URL on Castorus for price history.
     Returns dict with days_on_market, price_drops, etc.
+    Castorus is community-powered — data may not exist for all listings.
     """
     if not listing_url:
         return None
     try:
+        # Try direct search on Castorus
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "fr-FR,fr;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Referer": "https://www.castorus.com/",
+        }
+
+        # Method 1: Search by URL on Castorus
         encoded = urllib.parse.quote(listing_url, safe="")
-        castorus_search = f"https://www.castorus.com/s/{encoded}"
+        castorus_urls = [
+            f"https://www.castorus.com/s/{encoded}",
+            f"https://www.castorus.com/s/?q={encoded}",
+        ]
+
+        for castorus_url in castorus_urls:
+            async with httpx.AsyncClient(timeout=12, follow_redirects=True) as client:
+                resp = await client.get(castorus_url, headers=headers)
+                if resp.status_code != 200:
+                    continue
+
+                text = resp.text
+                data = {"source": "castorus", "url": listing_url}
+
+                # Parse price history
+                prices = re.findall(r'(\d[\d\s]*)\s*€', text.replace('\u202f', ' ').replace('\xa0', ' '))
+                dates = re.findall(r'(\d{2}/\d{2}/\d{4})', text)
+
+                if prices and dates:
+                    history = []
+                    for p, d in zip(prices[:10], dates[:10]):
+                        p_clean = p.replace(" ", "")
+                        if p_clean.isdigit() and int(p_clean) > 10000:
+                            history.append({"price": int(p_clean), "date": d})
+
+                    if history:
+                        data["price_history"] = history
+                        data["initial_price"] = history[0]["price"]
+                        data["current_price"] = history[-1]["price"]
+                        data["total_drop_pct"] = round(
+                            (history[0]["price"] - history[-1]["price"]) / history[0]["price"] * 100, 1
+                        ) if history[0]["price"] > 0 else 0
+                        data["num_price_drops"] = sum(
+                            1 for i in range(1, len(history)) if history[i]["price"] < history[i-1]["price"]
+                        )
+
+                # Parse days on market
+                dom_match = re.search(r'(\d+)\s*jour', text)
+                if dom_match:
+                    data["days_on_market"] = int(dom_match.group(1))
+
+                # Parse creation date
+                creation_match = re.search(r'(?:mise en ligne|créée?|publiée?)\s*(?:le\s*)?(\d{2}/\d{2}/\d{4})', text, re.IGNORECASE)
+                if creation_match:
+                    data["first_seen"] = creation_match.group(1)
+
+                if len(data) > 2:
+                    logger.info(f"Castorus found data for {listing_url}: DOM={data.get('days_on_market')}, drops={data.get('num_price_drops')}")
+                    return data
+
+        logger.info(f"Castorus: no data found for {listing_url}")
+        return None
+    except Exception as e:
+        logger.error(f"Castorus lookup error: {e}")
+        return None
+
+
+
+# ── Castorus Zone Stats (aggregate market data for a commune) ──
+
+async def scrape_castorus_zone_stats(postal_code: str) -> Optional[Dict]:
+    """
+    Scrape Castorus commune page for aggregate market stats:
+    - Average days on market
+    - % of listings with price drops
+    - Average drop amplitude
+    These feed into the tension index (Couche 2).
+    """
+    try:
+        # Castorus uses commune search
+        is_paris = postal_code.startswith("75") and len(postal_code) == 5
+        if is_paris:
+            arr_num = int(postal_code[-2:])
+            query = f"paris {arr_num}e"
+        else:
+            query = postal_code
+
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml",
+            "Accept-Language": "fr-FR,fr;q=0.9",
+            "Referer": "https://www.castorus.com/",
+        }
+
+        search_url = f"https://www.castorus.com/s/?q={urllib.parse.quote(query)}&type=buy"
         async with httpx.AsyncClient(timeout=12, follow_redirects=True) as client:
-            resp = await client.get(castorus_search, headers={
-                "User-Agent": "Mozilla/5.0", "Accept": "text/html",
-            })
+            resp = await client.get(search_url, headers=headers)
             if resp.status_code != 200:
+                logger.info(f"Castorus zone stats: {resp.status_code} for {postal_code}")
                 return None
 
             text = resp.text
-            data = {"source": "castorus", "url": listing_url}
+            stats = {"source": "castorus_zone", "postal_code": postal_code}
 
-            prices = re.findall(r'(\d[\d\s]*)\s*€', text.replace('\u202f', ' ').replace('\xa0', ' '))
-            dates = re.findall(r'(\d{2}/\d{2}/\d{4})', text)
+            # Try to extract aggregate stats from the page
+            # DOM average
+            dom_matches = re.findall(r'(\d+)\s*jour', text)
+            if dom_matches:
+                dom_values = [int(d) for d in dom_matches if 1 < int(d) < 1000]
+                if dom_values:
+                    stats["avg_dom"] = round(sum(dom_values) / len(dom_values))
+                    stats["dom_count"] = len(dom_values)
 
-            if prices and dates:
-                history = []
-                for p, d in zip(prices[:10], dates[:10]):
-                    p_clean = p.replace(" ", "")
-                    if p_clean.isdigit() and int(p_clean) > 10000:
-                        history.append({"price": int(p_clean), "date": d})
+            # Price drops
+            drop_matches = re.findall(r'(-\s*\d+[\d\s]*)\s*€', text.replace('\u202f', ' ').replace('\xa0', ' '))
+            price_matches = re.findall(r'(\d[\d\s]*)\s*€', text.replace('\u202f', ' ').replace('\xa0', ' '))
 
-                if history:
-                    data["price_history"] = history
-                    data["initial_price"] = history[0]["price"]
-                    data["current_price"] = history[-1]["price"]
-                    data["total_drop_pct"] = round(
-                        (history[0]["price"] - history[-1]["price"]) / history[0]["price"] * 100, 1
-                    ) if history[0]["price"] > 0 else 0
-                    data["num_price_drops"] = sum(
-                        1 for i in range(1, len(history)) if history[i]["price"] < history[i-1]["price"]
-                    )
+            if price_matches:
+                total_listings = len([p for p in price_matches if p.replace(" ", "").isdigit() and int(p.replace(" ", "")) > 50000])
+                listings_with_drops = len(drop_matches)
+                if total_listings > 0:
+                    stats["pct_with_drops"] = round(listings_with_drops / total_listings * 100, 1)
+                    stats["total_listings_seen"] = total_listings
 
-            dom_match = re.search(r'(\d+)\s*jour', text)
-            if dom_match:
-                data["days_on_market"] = int(dom_match.group(1))
+            if len(stats) > 2:
+                logger.info(f"Castorus zone stats for {postal_code}: {stats}")
+                return stats
 
-            return data if len(data) > 2 else None
+        return None
     except Exception as e:
-        logger.error(f"Castorus lookup error: {e}")
+        logger.warning(f"Castorus zone stats error for {postal_code}: {e}")
         return None
 
 
