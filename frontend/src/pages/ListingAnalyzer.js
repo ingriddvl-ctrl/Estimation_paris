@@ -1,7 +1,6 @@
 import { useState, useRef } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "@/lib/api";
-import { fetchBrowserMarketData } from "@/lib/market-scraper";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { Upload, Loader2, FileText, ArrowRight, TrendingUp, TrendingDown, Minus, AlertTriangle, CheckCircle, XCircle, ChevronDown, ChevronUp, Download, MapPin } from "lucide-react";
@@ -49,36 +48,6 @@ export default function ListingAnalyzer() {
     setResult(null);
     try {
       const data = await api.analyzeListing(file);
-
-      // After analysis, fetch browser market data using extracted info
-      if (data?.extracted) {
-        const ext = data.extracted;
-        const postalCode = ext.postal_code || "";
-        const surface = ext.surface_carrez || ext.surface_habitable || 50;
-        const rooms = ext.rooms || 2;
-        const streetName = ext.address || "";
-
-        if (postalCode) {
-          toast.info("Recherche d'annonces similaires...");
-          try {
-            const browserMarket = await fetchBrowserMarketData(
-              postalCode, streetName, surface, rooms, ""
-            );
-            if (browserMarket) {
-              data.browser_market = browserMarket;
-              if (browserMarket.listings?.length > 0) {
-                toast.success(`${browserMarket.listings.length} annonces trouvées !`);
-              }
-              if (browserMarket.meilleursagents) {
-                data.meilleursagents = browserMarket.meilleursagents;
-              }
-            }
-          } catch (e) {
-            console.warn("Browser market scrape failed:", e);
-          }
-        }
-      }
-
       setResult(data);
       toast.success("Fiche analysée avec succès !");
     } catch (err) {
