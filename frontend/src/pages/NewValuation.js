@@ -2,6 +2,7 @@ import { useState, useCallback } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import { fetchBrowserMarketData } from "@/lib/market-scraper";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -78,7 +79,62 @@ export default function NewValuation() {
     }
     setLoading(true);
     try {
-      const result = await api.estimateValuation(form);
+      // Step 1: Fetch market data from the browser (bypasses anti-bot)
+      toast.info("Recherche d'annonces en cours...");
+      let browserMarket = null;
+      try {
+        browserMarket = await fetchBrowserMarketData(
+          form.location.postal_code,
+          form.location.street_name,
+          form.characteristics.surface_carrez,
+          form.characteristics.rooms,
+          form.listing_url || "",
+        );
+        if (browserMarket?.listings?.length > 0) {
+          toast.success(`${browserMarket.listings.length} annonces trouvées !`);
+        }
+      } catch (e) {
+        console.warn("Browser market scrape failed (non-blocking):", e);
+      }
+
+      // Step 2: Send to backend with browser market data attached
+      const payload = {
+        ...form,
+        browser_market_data: browserMarket,
+      };
+      // If browser found Castorus data and no manual data exists, use it
+      if (browserMarket?.castorus && !form.castorus_manual) {
+        payload.castorus_manual = browserMarket.castorus;
+      }
+
+      const result = await api.estimateValuation(payload);
+
+      // Merge browser market data into the result for display
+      if (browserMarket) {
+        result.browser_market = browserMarket;
+        if (!result.active_market || result.active_market.listings_count === 0) {
+          result.active_market = {
+            ...result.active_market,
+            listings_count: browserMarket.listings?.length || 0,
+            listings_sample: (browserMarket.listings || []).slice(0, 15).map(l => ({
+              price: l.price,
+              price_per_sqm: l.price_per_sqm,
+              surface: l.surface,
+              rooms: l.rooms,
+              neighborhood: l.neighborhood,
+              floor: l.floor,
+              url: l.url,
+              source: "browser",
+            })),
+            listing_median_sqm: browserMarket.listing_median_sqm || 0,
+            browser_source: true,
+          };
+        }
+        if (browserMarket.meilleursagents) {
+          result.meilleursagents = browserMarket.meilleursagents;
+        }
+      }
+
       await api.saveValuation(result);
       toast.success("Estimation calculée !");
       navigate(`/results/${result.id}`);
