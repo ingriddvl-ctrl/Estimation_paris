@@ -4,7 +4,7 @@ import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
-import { ArrowLeft, Calculator, Share2, Copy, MapPin, TrendingUp, Shield, BarChart3, Loader2, Lightbulb, ShoppingBag, FileText, Brain, Download } from "lucide-react";
+import { ArrowLeft, Calculator, Share2, Copy, MapPin, TrendingUp, Shield, BarChart3, Loader2, Lightbulb, ShoppingBag, FileText, Brain, Download, Activity } from "lucide-react";
 import WaterfallChart from "@/components/WaterfallChart";
 import ComparablesMap from "@/components/ComparablesMap";
 import LocationScores from "@/components/LocationScores";
@@ -12,6 +12,7 @@ import RiskPanel from "@/components/RiskPanel";
 import HypothesesPanel from "@/components/HypothesesPanel";
 import MarketPosition from "@/components/MarketPosition";
 import MarketListings from "@/components/MarketListings";
+import ActiveMarketPanel from "@/components/ActiveMarketPanel";
 import DocumentUpload from "@/components/DocumentUpload";
 import ExpertInsights from "@/components/ExpertInsights";
 
@@ -137,7 +138,7 @@ export default function Results() {
                 {data.market_data.market_position.label}
               </p>
               <p className="text-xs text-zinc-400 mt-1 font-mono">
-                {data.market_data.market_position.diff_pct > 0 ? "+" : ""}{data.market_data.market_position.diff_pct}% vs arr.
+                {data.market_data.market_position.diff_pct > 0 ? "+" : ""}{data.market_data.market_position.diff_pct}% vs {data.market_data?.zone_label || "zone"}
               </p>
             </div>
           )}
@@ -151,6 +152,9 @@ export default function Results() {
             </TabsTrigger>
             <TabsTrigger value="marche" className="rounded-none text-xs data-[state=active]:bg-black data-[state=active]:text-white h-10 px-4" data-testid="tab-marche">
               <ShoppingBag className="w-3.5 h-3.5 mr-1.5" /> Marché
+            </TabsTrigger>
+            <TabsTrigger value="marche-actif" className="rounded-none text-xs data-[state=active]:bg-black data-[state=active]:text-white h-10 px-4" data-testid="tab-marche-actif">
+              <Activity className="w-3.5 h-3.5 mr-1.5" /> Annonces
             </TabsTrigger>
             <TabsTrigger value="expert" className="rounded-none text-xs data-[state=active]:bg-black data-[state=active]:text-white h-10 px-4" data-testid="tab-expert">
               <Brain className="w-3.5 h-3.5 mr-1.5" /> Expert
@@ -178,6 +182,10 @@ export default function Results() {
             <div className="mt-8">
               <MarketListings lat={loc.latitude} lon={loc.longitude} estimatedPriceSqm={data.price_per_sqm_median} />
             </div>
+          </TabsContent>
+
+          <TabsContent value="marche-actif" className="mt-6" data-testid="tab-content-marche-actif">
+            <ActiveMarketPanel activeMarket={data.active_market} marketData={data.market_data} />
           </TabsContent>
 
           <TabsContent value="expert" className="mt-6" data-testid="tab-content-expert">

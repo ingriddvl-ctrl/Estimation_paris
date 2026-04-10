@@ -13,6 +13,11 @@ from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional, Dict, Any
 import uuid
 from datetime import datetime, timezone
+from services import (
+    scrape_bienici_listings, scrape_seloger_listing_url, lookup_castorus_url,
+    calculate_spread, calculate_tension_index, calculate_market_coefficient,
+    estimate_transaction_price_from_asking,
+)
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -105,6 +110,9 @@ class ValuationRequest(BaseModel):
     condition: PropertyCondition
     building: BuildingInfo
     legal: LegalInfo
+    listing_url: str = ""
+    asking_price: float = 0.0
+    castorus_manual: Optional[Dict[str, Any]] = None
 
 class ValuationResult(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -463,38 +471,41 @@ def _distance_weight(d_meters):
 def _freshness_weight_months(date_str):
     """
     RÈGLE ABSOLUE: max 24 mois.
-    3 mois→1.0, 12 mois→0.7, 24 mois→0.4. Au-delà→exclusion (returns 0).
+    0-6 mois=1.0, 6-12 mois=0.8, 12-18 mois=0.6, 18-24 mois=0.4. Au-delà=exclusion.
     """
     try:
         parts = str(date_str).split("-")
         year = int(parts[0])
         month = int(parts[1]) if len(parts) > 1 else 6
-        ref_year, ref_month = 2026, 2  # current month
+        ref_year, ref_month = 2026, 2
         age_months = (ref_year - year) * 12 + (ref_month - month)
     except (ValueError, TypeError, IndexError):
-        return 0  # exclude if date is unparseable
+        return 0
     if age_months > 24:
-        return 0  # EXCLUSION: > 24 months
-    if age_months <= 3:
+        return 0
+    if age_months <= 6:
         return 1.0
     if age_months <= 12:
-        return 1.0 - (age_months - 3) * (0.3 / 9)  # 3mo=1.0 → 12mo=0.7
-    # 12 to 24 months
-    return 0.7 - (age_months - 12) * (0.3 / 12)  # 12mo=0.7 → 24mo=0.4
+        return 0.8
+    if age_months <= 18:
+        return 0.6
+    return 0.4
 
 def _surface_similarity_weight(comp_surface, target_surface):
     """
-    SEGMENTATION: Coefficient de similarité surface.
-    ±30% = 1.0, ±30-50% = 0.5, au-delà = exclusion (returns 0).
+    SEGMENTATION: Coefficient de similarité surface (prompt consolidé).
+    ±20% = 1.0, ±20-30% = 0.7, ±30-50% = 0.4, au-delà = exclusion (0).
     """
     if target_surface <= 0 or comp_surface <= 0:
         return 0
     ratio = abs(comp_surface - target_surface) / target_surface
-    if ratio <= 0.3:
+    if ratio <= 0.2:
         return 1.0
+    if ratio <= 0.3:
+        return 0.7
     if ratio <= 0.5:
-        return 0.5
-    return 0  # exclusion
+        return 0.4
+    return 0
 
 def _compute_relevance_score(distance_m, freshness_w, similarity_w, circle_bonus=0):
     """Score 0-100 combining distance, freshness, similarity + circle bonus."""
@@ -1105,6 +1116,82 @@ async def estimate_valuation(req: ValuationRequest):
     zone_label = _zone_display_label(loc.postal_code)
     is_paris = _is_paris_intramuros(loc.postal_code)
 
+    # ═══ COUCHE 2: Marché actif (annonces en cours) ═══
+    active_market = {}
+    try:
+        surface_target = chars.surface_carrez or 50
+
+        # Scrape active listings from BienIci
+        active_listings = await scrape_bienici_listings(
+            loc.postal_code,
+            surface_min=max(15, int(surface_target * 0.5)),
+            surface_max=int(surface_target * 2),
+            rooms_min=max(1, chars.rooms - 1),
+            rooms_max=chars.rooms + 2,
+        )
+
+        # Calculate spread (annonces vs DVF)
+        spread_data = calculate_spread(comparables, active_listings, surface_target,
+                                        postal_code=loc.postal_code)
+
+        # Castorus lookup if listing URL provided
+        castorus_data = None
+        if req.listing_url:
+            castorus_data = await lookup_castorus_url(req.listing_url)
+
+        # Use manual Castorus data if provided (fallback)
+        if not castorus_data and req.castorus_manual:
+            castorus_data = req.castorus_manual
+
+        # Calculate tension index
+        tension_data = calculate_tension_index(active_listings, comparables, castorus_data,
+                                                zone=zone)
+
+        # Calculate market coefficient (Couche 2)
+        market_coeff_data = calculate_market_coefficient(spread_data, tension_data, castorus_data)
+        market_coefficient = market_coeff_data["coefficient"]
+
+        # Apply Couche 2 to prices
+        total_price_median = round(total_price_median * market_coefficient)
+        total_price_low = round(total_price_low * market_coefficient)
+        total_price_high = round(total_price_high * market_coefficient)
+        adjusted_price_sqm = round(adjusted_price_sqm * market_coefficient)
+
+        # If asking price provided, estimate transaction price
+        transaction_estimate = None
+        if req.asking_price > 0:
+            transaction_estimate = estimate_transaction_price_from_asking(
+                req.asking_price, spread_data["spread_pct"],
+                tension_data["score"], castorus_data
+            )
+
+        # Build active market summary for response
+        listing_summary = []
+        for listing_item in active_listings[:15]:
+            listing_summary.append({
+                "price": listing_item.get("price"),
+                "price_per_sqm": listing_item.get("price_per_sqm"),
+                "surface": listing_item.get("surface"),
+                "rooms": listing_item.get("rooms"),
+                "neighborhood": listing_item.get("neighborhood", ""),
+                "floor": listing_item.get("floor"),
+            })
+
+        active_market = {
+            "listings_count": len(active_listings),
+            "listings_sample": listing_summary,
+            "spread": spread_data,
+            "tension": tension_data,
+            "market_coefficient": market_coeff_data,
+            "castorus": castorus_data,
+            "transaction_estimate": transaction_estimate,
+            "listing_median_sqm": spread_data.get("listing_median_sqm", 0),
+        }
+        logger.info(f"Couche 2: {len(active_listings)} annonces, spread={spread_data['spread_pct']}%, tension={tension_data['score']}/100, coeff={market_coefficient}")
+    except Exception as e:
+        logger.error(f"Couche 2 error (non-blocking): {e}")
+        active_market = {"error": str(e), "listings_count": 0}
+
     # Strip internal fields from comparables for response
     def _clean_comp(c):
         return {k: v for k, v in c.items() if not k.startswith("_")}
@@ -1151,7 +1238,82 @@ async def estimate_valuation(req: ValuationRequest):
     resp["street_coefficient"] = {"value": street_coeff, "detail": street_coeff_detail}
     # Cross-calibration warning
     resp["cross_calibration_warning"] = f"Vérifiez la cohérence de l'estimation avec les annonces en cours sur SeLoger/LeBonCoin autour de {loc.address or 'cette adresse'} (prix affichés = +5 à 10% vs prix de transaction réel). La moyenne de la zone ({arr_avg}€/m² pour {zone_label}) n'est PAS une référence valide — les écarts intra-zone peuvent dépasser 50%."
+    # Couche 2 — Active market data
+    resp["active_market"] = active_market
     return resp
+
+# ─── Standalone Market Data Endpoint ───
+
+class MarketDataRequest(BaseModel):
+    postal_code: str
+    surface: float = 60
+    rooms: int = 3
+    listing_url: str = ""
+    asking_price: float = 0
+    castorus_manual: Optional[Dict[str, Any]] = None
+
+@api_router.post("/market/active")
+async def get_active_market(req: MarketDataRequest):
+    """Get active market data (listings, spread, tension) for a zone."""
+    active_listings = await scrape_bienici_listings(
+        req.postal_code,
+        surface_min=max(15, int(req.surface * 0.5)),
+        surface_max=int(req.surface * 2),
+        rooms_min=max(1, req.rooms - 1),
+        rooms_max=req.rooms + 2,
+    )
+
+    # Get DVF comparables for spread calculation (use cached data if possible)
+    dvf_comps = []
+    doc = await db.valuations.find_one(
+        {"request.location.postal_code": req.postal_code},
+        {"_id": 0, "comparables": 1},
+        sort=[("created_at", -1)]
+    )
+    if doc:
+        dvf_comps = doc.get("comparables", [])
+
+    spread = calculate_spread(dvf_comps, active_listings, req.surface,
+                              postal_code=req.postal_code)
+
+    castorus_data = None
+    if req.listing_url:
+        castorus_data = await lookup_castorus_url(req.listing_url)
+    if not castorus_data and req.castorus_manual:
+        castorus_data = req.castorus_manual
+
+    zone = get_arrondissement_zone(req.postal_code)
+    tension = calculate_tension_index(active_listings, dvf_comps, castorus_data, zone=zone)
+    market_coeff = calculate_market_coefficient(spread, tension, castorus_data)
+
+    transaction_estimate = None
+    if req.asking_price > 0:
+        transaction_estimate = estimate_transaction_price_from_asking(
+            req.asking_price, spread["spread_pct"], tension["score"], castorus_data
+        )
+
+    listings_sample = []
+    for l in active_listings[:20]:
+        listings_sample.append({
+            "price": l.get("price"),
+            "price_per_sqm": l.get("price_per_sqm"),
+            "surface": l.get("surface"),
+            "rooms": l.get("rooms"),
+            "neighborhood": l.get("neighborhood", ""),
+            "floor": l.get("floor"),
+        })
+
+    return {
+        "postal_code": req.postal_code,
+        "zone_label": _zone_display_label(req.postal_code),
+        "listings_count": len(active_listings),
+        "listings_sample": listings_sample,
+        "spread": spread,
+        "tension": tension,
+        "market_coefficient": market_coeff,
+        "castorus": castorus_data,
+        "transaction_estimate": transaction_estimate,
+    }
 
 # ─── Recalculate with manual exclusions ───
 

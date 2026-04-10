@@ -23,6 +23,9 @@ const DEFAULT_FORM = {
   condition: { general_state: "bon_etat", renovation_year: null, kitchen_quality: "equipee_basique", bathroom_quality: "standard", flooring: "parquet_massif", windows: "double_vitrage", insulation: "partielle", heating: "individuel_gaz", dpe: "D", ges: "D", asbestos: false, lead: false, electrical_compliance: true },
   building: { construction_era: "haussmannien", building_type: "pierre_taille", total_floors: 6, total_lots: 20, elevator: true, concierge: false, security: "digicode", common_areas_state: "bon", facade_state: "correct", roof_state: "correct", annual_charges: 2400, ongoing_procedures: "aucune", syndic_type: "professionnel" },
   legal: { ownership_type: "pleine_propriete", property_tax: 800, current_rent: 0, remaining_lease_months: 0, carrez_certified: true, servitudes: "", plu_zone: "" },
+  listing_url: "",
+  asking_price: 0,
+  castorus_manual: null,
 };
 
 export default function NewValuation() {
