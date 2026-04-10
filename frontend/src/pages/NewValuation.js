@@ -2,7 +2,6 @@ import { useState, useCallback } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
-import { fetchBrowserMarketData } from "@/lib/market-scraper";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -27,6 +26,16 @@ const DEFAULT_FORM = {
   listing_url: "",
   asking_price: 0,
   castorus_manual: null,
+  market_manual: {
+    meilleursagents_price_sqm: 0,
+    meilleursagents_low: 0,
+    meilleursagents_high: 0,
+    castorus_dom: 0,
+    castorus_price_drops: 0,
+    castorus_initial_price: 0,
+    castorus_current_price: 0,
+    similar_listings: [],
+  },
 };
 
 export default function NewValuation() {
@@ -79,59 +88,70 @@ export default function NewValuation() {
     }
     setLoading(true);
     try {
-      // Step 1: Fetch market data from the browser (bypasses anti-bot)
-      toast.info("Recherche d'annonces en cours...");
-      let browserMarket = null;
-      try {
-        browserMarket = await fetchBrowserMarketData(
-          form.location.postal_code,
-          form.location.street_name,
-          form.characteristics.surface_carrez,
-          form.characteristics.rooms,
-          form.listing_url || "",
-        );
-        if (browserMarket?.listings?.length > 0) {
-          toast.success(`${browserMarket.listings.length} annonces trouvées !`);
-        }
-      } catch (e) {
-        console.warn("Browser market scrape failed (non-blocking):", e);
+      // Build castorus_manual from market_manual if user filled it
+      const mm = form.market_manual || {};
+      let castorus = form.castorus_manual;
+      if (mm.castorus_dom > 0 || mm.castorus_price_drops > 0 || mm.castorus_initial_price > 0) {
+        castorus = {
+          source: "manual_input",
+          days_on_market: mm.castorus_dom || null,
+          num_price_drops: mm.castorus_price_drops || 0,
+          initial_price: mm.castorus_initial_price || null,
+          current_price: mm.castorus_current_price || null,
+          total_drop_pct: (mm.castorus_initial_price && mm.castorus_current_price && mm.castorus_initial_price > 0)
+            ? Math.round((mm.castorus_initial_price - mm.castorus_current_price) / mm.castorus_initial_price * 1000) / 10
+            : 0,
+        };
       }
 
-      // Step 2: Send to backend with browser market data attached
+      // Build browser_market_data from manual similar listings
+      const similarListings = (mm.similar_listings || []).filter(l => l.price > 0 && l.surface > 0);
+      let browserMarketData = null;
+      if (similarListings.length > 0 || mm.meilleursagents_price_sqm > 0) {
+        const listings = similarListings.map(l => ({
+          price: l.price,
+          surface: l.surface,
+          price_per_sqm: l.surface > 0 ? Math.round(l.price / l.surface) : 0,
+          url: l.url || "",
+          source: "manual_input",
+        }));
+        browserMarketData = {
+          listings,
+          listing_count: listings.length,
+          listing_median_sqm: listings.length > 0
+            ? listings.map(l => l.price_per_sqm).sort((a, b) => a - b)[Math.floor(listings.length / 2)]
+            : 0,
+          meilleursagents: mm.meilleursagents_price_sqm > 0 ? {
+            source: "manual_input",
+            price_per_sqm: mm.meilleursagents_price_sqm,
+            price_low: mm.meilleursagents_low || null,
+            price_high: mm.meilleursagents_high || null,
+          } : null,
+          source: "manual",
+        };
+      }
+
       const payload = {
         ...form,
-        browser_market_data: browserMarket,
+        castorus_manual: castorus,
+        browser_market_data: browserMarketData,
       };
-      // If browser found Castorus data and no manual data exists, use it
-      if (browserMarket?.castorus && !form.castorus_manual) {
-        payload.castorus_manual = browserMarket.castorus;
-      }
 
       const result = await api.estimateValuation(payload);
 
-      // Merge browser market data into the result for display
-      if (browserMarket) {
-        result.browser_market = browserMarket;
+      // Merge manual market data into result for display
+      if (browserMarketData) {
         if (!result.active_market || result.active_market.listings_count === 0) {
           result.active_market = {
             ...result.active_market,
-            listings_count: browserMarket.listings?.length || 0,
-            listings_sample: (browserMarket.listings || []).slice(0, 15).map(l => ({
-              price: l.price,
-              price_per_sqm: l.price_per_sqm,
-              surface: l.surface,
-              rooms: l.rooms,
-              neighborhood: l.neighborhood,
-              floor: l.floor,
-              url: l.url,
-              source: "browser",
-            })),
-            listing_median_sqm: browserMarket.listing_median_sqm || 0,
-            browser_source: true,
+            listings_count: browserMarketData.listing_count || 0,
+            listings_sample: browserMarketData.listings || [],
+            listing_median_sqm: browserMarketData.listing_median_sqm || 0,
+            manual_source: true,
           };
         }
-        if (browserMarket.meilleursagents) {
-          result.meilleursagents = browserMarket.meilleursagents;
+        if (browserMarketData.meilleursagents) {
+          result.meilleursagents = browserMarketData.meilleursagents;
         }
       }
 
@@ -641,6 +661,22 @@ function Step4({ form, update }) {
 }
 
 function Step5({ form, update }) {
+  const addSimilarListing = () => {
+    const current = form.market_manual?.similar_listings || [];
+    if (current.length >= 5) return;
+    update("market_manual", "similar_listings", [...current, { price: 0, surface: 0, url: "" }]);
+  };
+  const updateListing = (idx, field, value) => {
+    const current = [...(form.market_manual?.similar_listings || [])];
+    current[idx] = { ...current[idx], [field]: value };
+    update("market_manual", "similar_listings", current);
+  };
+  const removeListing = (idx) => {
+    const current = [...(form.market_manual?.similar_listings || [])];
+    current.splice(idx, 1);
+    update("market_manual", "similar_listings", current);
+  };
+
   return (
     <div data-testid="step-5-form">
       <h2 className="font-heading font-bold text-2xl sm:text-3xl tracking-tight mb-2">Données juridiques et fiscales</h2>
@@ -677,6 +713,86 @@ function Step5({ form, update }) {
         <FieldGroup label="Servitudes connues">
           <Input value={form.legal.servitudes} onChange={(e) => update("legal", "servitudes", e.target.value)} placeholder="Vue, passage, etc." className="rounded-none h-11" data-testid="servitudes-input" />
         </FieldGroup>
+      </div>
+
+      {/* ── SECTION DONNÉES MARCHÉ ── */}
+      <div className="mt-16 pt-8 border-t border-zinc-200">
+        <h2 className="font-heading font-bold text-2xl sm:text-3xl tracking-tight mb-2">Données marché (optionnel)</h2>
+        <p className="text-sm text-zinc-500 mb-3">Ces données améliorent considérablement la précision de l'estimation.</p>
+        <div className="bg-amber-50 border border-amber-200 p-4 mb-8">
+          <p className="text-sm text-amber-800">
+            <strong>Comment remplir en 2 minutes :</strong> Allez sur <a href="https://www.meilleursagents.com" target="_blank" rel="noopener noreferrer" className="underline font-medium">meilleursagents.com</a>, tapez l'adresse de votre bien, et copiez le prix/m² affiché. Pour Castorus, installez l'extension Chrome puis consultez l'annonce du bien.
+          </p>
+        </div>
+
+        {/* MeilleursAgents */}
+        <h3 className="font-heading font-semibold text-lg mb-4 flex items-center gap-2">
+          <span className="w-6 h-6 bg-blue-600 text-white flex items-center justify-center text-xs font-bold">1</span>
+          Prix/m² MeilleursAgents de la rue
+        </h3>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
+          <FieldGroup label="Prix/m² moyen" overline="MeilleursAgents">
+            <Input type="number" min="0" value={form.market_manual?.meilleursagents_price_sqm || ""} onChange={(e) => update("market_manual", "meilleursagents_price_sqm", parseFloat(e.target.value) || 0)} placeholder="ex: 9500" className="rounded-none h-11" />
+          </FieldGroup>
+          <FieldGroup label="Fourchette basse (€/m²)">
+            <Input type="number" min="0" value={form.market_manual?.meilleursagents_low || ""} onChange={(e) => update("market_manual", "meilleursagents_low", parseFloat(e.target.value) || 0)} placeholder="ex: 8200" className="rounded-none h-11" />
+          </FieldGroup>
+          <FieldGroup label="Fourchette haute (€/m²)">
+            <Input type="number" min="0" value={form.market_manual?.meilleursagents_high || ""} onChange={(e) => update("market_manual", "meilleursagents_high", parseFloat(e.target.value) || 0)} placeholder="ex: 11000" className="rounded-none h-11" />
+          </FieldGroup>
+        </div>
+
+        {/* Castorus */}
+        <h3 className="font-heading font-semibold text-lg mb-4 flex items-center gap-2">
+          <span className="w-6 h-6 bg-orange-500 text-white flex items-center justify-center text-xs font-bold">2</span>
+          Données Castorus (si vous avez l'extension)
+        </h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-10">
+          <FieldGroup label="Jours en vente (DOM)" overline="Castorus">
+            <Input type="number" min="0" value={form.market_manual?.castorus_dom || ""} onChange={(e) => update("market_manual", "castorus_dom", parseInt(e.target.value) || 0)} placeholder="ex: 45" className="rounded-none h-11" />
+          </FieldGroup>
+          <FieldGroup label="Nombre de baisses de prix">
+            <Input type="number" min="0" value={form.market_manual?.castorus_price_drops || ""} onChange={(e) => update("market_manual", "castorus_price_drops", parseInt(e.target.value) || 0)} placeholder="ex: 2" className="rounded-none h-11" />
+          </FieldGroup>
+          <FieldGroup label="Prix initial (€)">
+            <Input type="number" min="0" value={form.market_manual?.castorus_initial_price || ""} onChange={(e) => update("market_manual", "castorus_initial_price", parseFloat(e.target.value) || 0)} placeholder="ex: 550000" className="rounded-none h-11" />
+          </FieldGroup>
+          <FieldGroup label="Prix actuel (€)">
+            <Input type="number" min="0" value={form.market_manual?.castorus_current_price || ""} onChange={(e) => update("market_manual", "castorus_current_price", parseFloat(e.target.value) || 0)} placeholder="ex: 520000" className="rounded-none h-11" />
+          </FieldGroup>
+        </div>
+
+        {/* Annonces similaires */}
+        <h3 className="font-heading font-semibold text-lg mb-4 flex items-center gap-2">
+          <span className="w-6 h-6 bg-green-600 text-white flex items-center justify-center text-xs font-bold">3</span>
+          Annonces similaires dans le quartier
+        </h3>
+        <p className="text-sm text-zinc-500 mb-4">Ajoutez 2-3 annonces de biens similaires trouvées sur SeLoger, LeBonCoin ou BienIci.</p>
+
+        {(form.market_manual?.similar_listings || []).map((listing, idx) => (
+          <div key={idx} className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4 p-4 bg-zinc-50 border border-zinc-200">
+            <FieldGroup label={`Prix (€)`}>
+              <Input type="number" min="0" value={listing.price || ""} onChange={(e) => updateListing(idx, "price", parseFloat(e.target.value) || 0)} placeholder="ex: 480000" className="rounded-none h-11" />
+            </FieldGroup>
+            <FieldGroup label="Surface (m²)">
+              <Input type="number" min="0" value={listing.surface || ""} onChange={(e) => updateListing(idx, "surface", parseFloat(e.target.value) || 0)} placeholder="ex: 55" className="rounded-none h-11" />
+            </FieldGroup>
+            <FieldGroup label="URL de l'annonce">
+              <Input value={listing.url || ""} onChange={(e) => updateListing(idx, "url", e.target.value)} placeholder="https://..." className="rounded-none h-11" />
+            </FieldGroup>
+            <div className="flex items-end">
+              <Button variant="outline" onClick={() => removeListing(idx)} className="rounded-none h-11 text-red-500 border-red-200 hover:bg-red-50">
+                Supprimer
+              </Button>
+            </div>
+          </div>
+        ))}
+
+        {(form.market_manual?.similar_listings || []).length < 5 && (
+          <Button variant="outline" onClick={addSimilarListing} className="rounded-none h-11 mt-2">
+            + Ajouter une annonce similaire
+          </Button>
+        )}
       </div>
     </div>
   );
