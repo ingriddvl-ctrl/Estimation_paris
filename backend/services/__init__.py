@@ -73,15 +73,28 @@ def _get_default_tension(zone: str) -> int:
 
 _BIENICI_ZONE_IDS = {}  # Will be populated dynamically via suggest API
 
+def _postal_to_insee_paris(postal_code: str) -> str:
+    """Convert Paris postal code (75001-75020) to INSEE code (75101-75120).
+    BienIci uses INSEE codes, not postal codes for Paris arrondissements."""
+    if postal_code.startswith("75") and len(postal_code) == 5:
+        arr = int(postal_code[3:])
+        if 1 <= arr <= 20:
+            return f"751{arr:02d}"
+    return postal_code
+
+
 async def _resolve_bienici_zone(postal_code: str) -> Optional[Dict]:
     """Resolve a postal code to BienIci zone IDs via their suggest API."""
     if postal_code in _BIENICI_ZONE_IDS:
         return _BIENICI_ZONE_IDS[postal_code]
 
-    is_paris = postal_code.startswith("75")
+    is_paris = postal_code.startswith("75") and len(postal_code) == 5 and postal_code[2:].isdigit()
+    insee_code = _postal_to_insee_paris(postal_code) if is_paris else postal_code
+
     if is_paris:
-        arr_num = postal_code[-2:]
-        query = f"paris {arr_num}e"
+        arr_num = int(postal_code[-2:])
+        # Use specific query formats that BienIci recognizes
+        query = f"paris {arr_num}e arrondissement"
     else:
         query = postal_code
 
@@ -93,17 +106,48 @@ async def _resolve_bienici_zone(postal_code: str) -> Optional[Dict]:
             )
             if resp.status_code == 200:
                 suggestions = resp.json()
+                logger.info(f"BienIci suggest for '{query}': {len(suggestions)} results")
                 for s in suggestions:
-                    if any(pc == postal_code or pc == postal_code.replace("750", "751") for pc in s.get("postalCodes", [])):
+                    s_postcodes = s.get("postalCodes", [])
+                    s_insee_codes = s.get("insee_codes", [])
+                    s_insee_single = s.get("insee_code", "")
+
+                    # Match by postal code, INSEE code, or derived INSEE code
+                    match = (
+                        postal_code in s_postcodes
+                        or insee_code in s_postcodes
+                        or insee_code in s_insee_codes
+                        or s_insee_single == insee_code
+                    )
+
+                    if match:
                         zone_data = {
-                            "insee_code": s.get("insee_code", s.get("insee_codes", [postal_code])[0] if s.get("insee_codes") else postal_code),
+                            "insee_code": s_insee_single or (s_insee_codes[0] if s_insee_codes else insee_code),
                             "zone_ids": s.get("zoneIds", []),
                             "name": s.get("name", ""),
                         }
                         _BIENICI_ZONE_IDS[postal_code] = zone_data
+                        logger.info(f"BienIci zone resolved: {postal_code} -> {zone_data['name']} (INSEE: {zone_data['insee_code']}, zones: {zone_data['zone_ids']})")
                         return zone_data
+
+                # Fallback: take first suggestion if it's in the right department
+                if suggestions:
+                    s = suggestions[0]
+                    dept = postal_code[:2]
+                    s_postcodes = s.get("postalCodes", [])
+                    if any(pc.startswith(dept) for pc in s_postcodes) or not s_postcodes:
+                        zone_data = {
+                            "insee_code": s.get("insee_code", s.get("insee_codes", [insee_code])[0] if s.get("insee_codes") else insee_code),
+                            "zone_ids": s.get("zoneIds", []),
+                            "name": s.get("name", ""),
+                        }
+                        _BIENICI_ZONE_IDS[postal_code] = zone_data
+                        logger.info(f"BienIci zone fallback: {postal_code} -> {zone_data['name']}")
+                        return zone_data
+
+                logger.warning(f"BienIci: no match found for {postal_code} (INSEE: {insee_code}) in {len(suggestions)} suggestions")
     except Exception as e:
-        logger.warning(f"BienIci zone resolve error: {e}")
+        logger.warning(f"BienIci zone resolve error for {postal_code}: {e}")
     return None
 
 
@@ -151,10 +195,22 @@ async def scrape_bienici_listings(postal_code: str, surface_min: int = 20, surfa
 
             listings = []
             target_postal = postal_code
+            target_insee = _postal_to_insee_paris(postal_code) if postal_code.startswith("75") else postal_code
             for ad in ads:
                 ad_postal = ad.get("postalCode", "")
-                # Filter to correct postal code area
-                if not ad_postal.startswith(postal_code[:3]):
+                ad_city_code = ad.get("cityCode", "") or ad.get("insee_code", "")
+                # For Paris: match on exact postal code or exact INSEE code
+                # For suburbs: match on exact postal code
+                if postal_code.startswith("75"):
+                    is_match = (
+                        ad_postal == postal_code
+                        or ad_postal == target_insee
+                        or ad_city_code == target_insee
+                    )
+                else:
+                    is_match = ad_postal == postal_code
+
+                if not is_match:
                     continue
 
                 price = ad.get("price", 0)
