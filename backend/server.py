@@ -106,6 +106,7 @@ class LegalInfo(BaseModel):
     plu_zone: str = ""
 
 class ValuationRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     location: PropertyLocation
     characteristics: PropertyCharacteristics
     condition: PropertyCondition
@@ -114,6 +115,7 @@ class ValuationRequest(BaseModel):
     listing_url: str = ""
     asking_price: float = 0.0
     castorus_manual: Optional[Dict[str, Any]] = None
+    browser_market_data: Optional[Dict[str, Any]] = None
 
 class ValuationResult(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
