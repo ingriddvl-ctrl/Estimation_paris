@@ -15,6 +15,7 @@ import uuid
 from datetime import datetime, timezone
 from services import (
     scrape_bienici_listings, scrape_seloger_listing_url, lookup_castorus_url,
+    scrape_castorus_zone_stats,
     calculate_spread, calculate_tension_index, calculate_market_coefficient,
     estimate_transaction_price_from_asking,
 )
@@ -275,12 +276,22 @@ async def search_dvf(
                     price_f = float(price)
                     surface_f = float(surface)
                     if price_f > 0:
+                        # Build readable address
+                        raw_addr = p.get("l_adresse", "") or ""
+                        if not raw_addr or "PARCELLE" in raw_addr.upper():
+                            num_v = p.get("l_numvoie", "") or ""
+                            type_v = p.get("l_typvoie", "") or ""
+                            nom_v = p.get("l_nomvoie", "") or ""
+                            if nom_v:
+                                raw_addr = f"{num_v} {type_v} {nom_v}".strip()
+                            else:
+                                raw_addr = f"Parcelle {p.get('l_idpar', '')}"
                         results.append({
                             "date": str(p.get("datemut", p.get("anneemut", ""))),
                             "price": price_f,
                             "surface": surface_f,
                             "rooms": p.get("nbpiece", 0) or 0,
-                            "address": p.get("l_adresse", "") or f"Parcelle {p.get('l_idpar', '')}",
+                            "address": raw_addr,
                             "postal_code": str(p.get("l_codinsee", ""))[:5],
                             "latitude": coords[1],
                             "longitude": coords[0],
@@ -555,12 +566,25 @@ def _parse_dvf_feature_raw(f, ref_lat, ref_lon, max_radius):
     if d > max_radius:
         return None
     date_str = str(p.get("datemut", p.get("anneemut", "")))
-    raw_address = p.get("l_adresse", "") or f"Parcelle {p.get('l_idpar', '')}"
-    street = _normalize_street(raw_address)
+    raw_address = p.get("l_adresse", "") or ""
+    # Try to build a readable address from available fields
+    if raw_address and "PARCELLE" not in raw_address.upper() and raw_address.strip():
+        display_address = raw_address
+    else:
+        # Use l_adresse fields if available, fallback to parcel ID
+        num_voie = p.get("l_numvoie", "") or ""
+        type_voie = p.get("l_typvoie", "") or ""
+        nom_voie = p.get("l_nomvoie", "") or ""
+        if nom_voie:
+            display_address = f"{num_voie} {type_voie} {nom_voie}".strip()
+        else:
+            parcel_ids = p.get("l_idpar", "")
+            display_address = f"Parcelle {parcel_ids}" if parcel_ids else "Adresse non renseignée"
+    street = _normalize_street(display_address)
     return {
         "date": date_str, "price": pf, "surface": sf,
         "rooms": p.get("nbpiece", 0) or 0,
-        "address": raw_address,
+        "address": display_address,
         "postal_code": str(p.get("l_codinsee", ""))[:5],
         "latitude": clat, "longitude": clon,
         "price_per_sqm": round(pf / sf), "distance_m": round(d),
@@ -659,18 +683,32 @@ def _filter_and_score_comparables(raw_comps, target_surface, postal_code,
         prices = [c["price_per_sqm"] for c in included]
         mean_p = sum(prices) / len(prices)
         std_p = (sum((p - mean_p)**2 for p in prices) / len(prices)) ** 0.5
+        # Also use IQR for more robust filtering
+        sorted_prices = sorted(prices)
+        q1_idx = len(sorted_prices) // 4
+        q3_idx = 3 * len(sorted_prices) // 4
+        q1 = sorted_prices[q1_idx]
+        q3 = sorted_prices[q3_idx]
+        iqr = q3 - q1
+        iqr_lower = q1 - 1.5 * iqr
+        iqr_upper = q3 + 1.5 * iqr
+        # Use the tighter of the two methods
         if std_p > 0:
-            lower, upper = mean_p - 2 * std_p, mean_p + 2 * std_p
-            new_included = []
-            for c in included:
-                if c["price_per_sqm"] < lower or c["price_per_sqm"] > upper:
-                    c["exclusion_reasons"] = [f"Outlier >2σ ({c['price_per_sqm']}€/m² hors [{int(lower)}-{int(upper)}])"]
-                    c["included"] = False
-                    c["circle"] = 0
-                    excluded.append(c)
-                else:
-                    new_included.append(c)
-            included = new_included
+            std_lower, std_upper = mean_p - 1.5 * std_p, mean_p + 1.5 * std_p
+            lower = max(iqr_lower, std_lower)
+            upper = min(iqr_upper, std_upper)
+        else:
+            lower, upper = iqr_lower, iqr_upper
+        new_included = []
+        for c in included:
+            if c["price_per_sqm"] < lower or c["price_per_sqm"] > upper:
+                c["exclusion_reasons"] = [f"Outlier ({c['price_per_sqm']}€/m² hors [{int(lower)}-{int(upper)}])"]
+                c["included"] = False
+                c["circle"] = 0
+                excluded.append(c)
+            else:
+                new_included.append(c)
+        included = new_included
     included.sort(key=lambda x: (x.get("circle", 3), -x.get("relevance_score", 0)))
     excluded.sort(key=lambda x: x.get("distance_m", 999))
     c1 = len([c for c in included if c.get("circle") == 1])
@@ -1047,21 +1085,28 @@ async def estimate_valuation(req: ValuationRequest):
     total_price_low = total_price_median * (1 - spread)
     total_price_high = total_price_median * (1 + spread)
 
-    # Market position: compare to arrondissement average
+    # Market position: compare to LOCAL DVF median (not arrondissement average!)
+    # RÈGLE: La moyenne d'arrondissement n'est PAS une référence valide.
+    # Le 16e va de 8000€/m² (Auteuil Sud) à 15000€/m² (Trocadéro).
     final_sqm = adjusted_price_sqm
-    diff_vs_arr_pct = ((final_sqm - arr_avg) / arr_avg * 100) if arr_avg > 0 else 0
-    if diff_vs_arr_pct > 15:
-        market_position = {"label": "++", "description": "Nettement au-dessus du marché", "color": "green"}
-    elif diff_vs_arr_pct > 5:
-        market_position = {"label": "+", "description": "Au-dessus du marché", "color": "green"}
-    elif diff_vs_arr_pct > -5:
-        market_position = {"label": "=", "description": "Dans la moyenne du marché", "color": "neutral"}
-    elif diff_vs_arr_pct > -15:
-        market_position = {"label": "-", "description": "En-dessous du marché", "color": "red"}
+    local_ref = base_price_sqm if comparables else arr_avg
+    local_ref_label = f"médiane DVF locale ({search_radius}m)" if comparables else f"moyenne {zone_label} (fallback)"
+    diff_vs_local_pct = ((final_sqm - local_ref) / local_ref * 100) if local_ref > 0 else 0
+    if diff_vs_local_pct > 15:
+        market_position = {"label": "++", "description": "Nettement au-dessus du marché local", "color": "green"}
+    elif diff_vs_local_pct > 5:
+        market_position = {"label": "+", "description": "Au-dessus du marché local", "color": "green"}
+    elif diff_vs_local_pct > -5:
+        market_position = {"label": "=", "description": "Dans la moyenne du marché local", "color": "neutral"}
+    elif diff_vs_local_pct > -15:
+        market_position = {"label": "-", "description": "En-dessous du marché local", "color": "red"}
     else:
-        market_position = {"label": "--", "description": "Nettement en-dessous du marché", "color": "red"}
-    market_position["diff_pct"] = round(diff_vs_arr_pct, 1)
+        market_position = {"label": "--", "description": "Nettement en-dessous du marché local", "color": "red"}
+    market_position["diff_pct"] = round(diff_vs_local_pct, 1)
+    market_position["local_ref_sqm"] = round(local_ref)
+    market_position["local_ref_label"] = local_ref_label
     market_position["arr_avg"] = arr_avg
+    market_position["arr_avg_note"] = f"Moyenne {zone_label} : {arr_avg}€/m² (indicatif uniquement — écarts intra-zone > 50%)"
     market_position["estimated_sqm"] = round(final_sqm)
 
     # Location scores (simplified)
@@ -1130,6 +1175,9 @@ async def estimate_valuation(req: ValuationRequest):
             rooms_max=chars.rooms + 2,
         )
 
+        # Also get Castorus zone stats for market tension
+        castorus_zone = await scrape_castorus_zone_stats(loc.postal_code)
+
         # Calculate spread (annonces vs DVF)
         spread_data = calculate_spread(comparables, active_listings, surface_target,
                                         postal_code=loc.postal_code)
@@ -1142,6 +1190,14 @@ async def estimate_valuation(req: ValuationRequest):
         # Use manual Castorus data if provided (fallback)
         if not castorus_data and req.castorus_manual:
             castorus_data = req.castorus_manual
+
+        # Enrich castorus_data with zone-level stats if individual data missing
+        if not castorus_data and castorus_zone:
+            castorus_data = {
+                "source": "castorus_zone_aggregate",
+                "days_on_market": castorus_zone.get("avg_dom"),
+                "zone_pct_drops": castorus_zone.get("pct_with_drops"),
+            }
 
         # Calculate tension index
         tension_data = calculate_tension_index(active_listings, comparables, castorus_data,
