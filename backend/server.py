@@ -1088,6 +1088,8 @@ async def estimate_valuation(req: ValuationRequest):
     # Market position: compare to LOCAL DVF median (not arrondissement average!)
     # RÈGLE: La moyenne d'arrondissement n'est PAS une référence valide.
     # Le 16e va de 8000€/m² (Auteuil Sud) à 15000€/m² (Trocadéro).
+    zone_label = _zone_display_label(loc.postal_code)
+    is_paris = _is_paris_intramuros(loc.postal_code)
     final_sqm = adjusted_price_sqm
     local_ref = base_price_sqm if comparables else arr_avg
     local_ref_label = f"médiane DVF locale ({search_radius}m)" if comparables else f"moyenne {zone_label} (fallback)"
@@ -1157,9 +1159,6 @@ async def estimate_valuation(req: ValuationRequest):
 
     # Micro-location score
     micro_score = compute_micro_score(comparables, arr_avg, postal_code=loc.postal_code)
-
-    zone_label = _zone_display_label(loc.postal_code)
-    is_paris = _is_paris_intramuros(loc.postal_code)
 
     # ═══ COUCHE 2: Marché actif (annonces en cours) ═══
     active_market = {}
