@@ -87,8 +87,8 @@ export default function Settings() {
       <header className="border-b border-zinc-200 sticky top-0 bg-white/80 backdrop-blur-xl z-50">
         <div className="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
           <Link to="/" className="flex items-center gap-3" data-testid="settings-nav-home">
-            <div className="w-8 h-8 bg-black flex items-center justify-center"><span className="text-white font-heading font-bold text-sm">V</span></div>
-            <span className="font-heading font-bold text-lg tracking-tight">VALORISATEUR</span>
+            <div className="w-8 h-8 bg-gradient-to-br from-slate-800 to-slate-600 rounded-lg flex items-center justify-center"><span className="text-white font-bold text-sm">V</span></div>
+            <span className="font-bold text-lg tracking-tight text-slate-800">Valorisateur</span><span className="font-medium text-lg text-teal-600 ml-1">Ingrid</span>
           </Link>
           <div className="flex items-center gap-3">
             <Button variant="outline" size="sm" onClick={handleReset} className="rounded-none text-xs" data-testid="reset-config-btn">
