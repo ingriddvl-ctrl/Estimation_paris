@@ -1,18 +1,11 @@
-<!doctype html>
-<html lang="fr">
-    <head>
-        <meta charset="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <meta name="theme-color" content="#1a3a8f" />
-        <meta name="description" content="Ingrid Immo — Estimation immobilière transparente à Paris & petite couronne" />
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-        <title>Ingrid Immo — Estimation immobilière Paris</title>
-    </head>
-    <body>
-        <noscript>Activez JavaScript pour utiliser cette application.</noscript>
-        <div id="root"></div>
-    </body>
-</html>
+import React from "react";
+import ReactDOM from "react-dom/client";
+import "./index.css";
+import App from "./App";
 
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);
