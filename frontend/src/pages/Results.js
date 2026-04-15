@@ -18,25 +18,25 @@ import DocumentUpload from "@/components/DocumentUpload";
 import ExpertInsights from "@/components/ExpertInsights";
 
 function formatPrice(n) {
-  if (!n) return "\u2014";
+  if (!n) return "—";
   return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR", maximumFractionDigits: 0 }).format(n);
 }
 
 const CONFIG_FIELDS = {
-  floor_rdc: { label: "RDC", unit: "%", group: "\u00c9tage" },
-  floor_1st: { label: "1er \u00e9tage", unit: "%", group: "\u00c9tage" },
-  floor_last_with_elevator: { label: "Dernier \u00e9tage + ascenseur", unit: "%", group: "\u00c9tage" },
-  floor_per_level_elevator: { label: "Par \u00e9tage au-del\u00e0 du 3e", unit: "%", group: "\u00c9tage" },
-  floor_6_plus_no_elevator: { label: "6e+ sans ascenseur", unit: "%", group: "\u00c9tage" },
+  floor_rdc: { label: "RDC", unit: "%", group: "Étage" },
+  floor_1st: { label: "1er étage", unit: "%", group: "Étage" },
+  floor_last_with_elevator: { label: "Dernier étage + ascenseur", unit: "%", group: "Étage" },
+  floor_per_level_elevator: { label: "Par étage au-delà du 3e", unit: "%", group: "Étage" },
+  floor_6_plus_no_elevator: { label: "6e+ sans ascenseur", unit: "%", group: "Étage" },
   south_traversant: { label: "Sud / traversant", unit: "%", group: "Exposition" },
   north_mono: { label: "Nord mono", unit: "%", group: "Exposition" },
-  vis_a_vis_close: { label: "Vis-\u00e0-vis < 10m", unit: "%", group: "Vue" },
+  vis_a_vis_close: { label: "Vis-à-vis < 10m", unit: "%", group: "Vue" },
   view_monument: { label: "Vue monument", unit: "%", group: "Vue" },
   view_rooftops: { label: "Vue toits", unit: "%", group: "Vue" },
   view_garden: { label: "Vue jardin/parc", unit: "%", group: "Vue" },
-  balcony_pct: { label: "Balcon", unit: "%", group: "Ext\u00e9rieur" },
-  terrace_pct: { label: "Terrasse", unit: "%", group: "Ext\u00e9rieur" },
-  garden_pct: { label: "Jardin", unit: "%", group: "Ext\u00e9rieur" },
+  balcony_pct: { label: "Balcon", unit: "%", group: "Extérieur" },
+  terrace_pct: { label: "Terrasse", unit: "%", group: "Extérieur" },
+  garden_pct: { label: "Jardin", unit: "%", group: "Extérieur" },
   dpe_ab: { label: "DPE A-B", unit: "%", group: "DPE" },
   dpe_cd: { label: "DPE C-D", unit: "%", group: "DPE" },
   dpe_e: { label: "DPE E", unit: "%", group: "DPE" },
@@ -46,13 +46,13 @@ const CONFIG_FIELDS = {
   concierge_bonus: { label: "Gardien", unit: "%", group: "Immeuble" },
   ceiling_high: { label: "HSP > 2,80m", unit: "%", group: "Volumes" },
   ceiling_low: { label: "HSP < 2,50m", unit: "%", group: "Volumes" },
-  parking_central: { label: "Parking central", unit: "\u20ac", group: "Parking" },
-  parking_intermediate: { label: "Parking interm\u00e9diaire", unit: "\u20ac", group: "Parking" },
-  parking_peripheral: { label: "Parking p\u00e9riph\u00e9rique", unit: "\u20ac", group: "Parking" },
-  state_to_renovate: { label: "\u00c0 r\u00e9nover (co\u00fbt/m\u00b2)", unit: "\u20ac/m\u00b2", group: "\u00c9tat" },
-  state_new: { label: "Refait \u00e0 neuf", unit: "%", group: "\u00c9tat" },
-  state_luxury: { label: "Luxe", unit: "%", group: "\u00c9tat" },
-  sold_occupied_discount: { label: "Vendu occup\u00e9", unit: "%", group: "Juridique" },
+  parking_central: { label: "Parking central", unit: "€", group: "Parking" },
+  parking_intermediate: { label: "Parking intermédiaire", unit: "€", group: "Parking" },
+  parking_peripheral: { label: "Parking périphérique", unit: "€", group: "Parking" },
+  state_to_renovate: { label: "À rénover (coût/m²)", unit: "€/m²", group: "État" },
+  state_new: { label: "Refait à neuf", unit: "%", group: "État" },
+  state_luxury: { label: "Luxe", unit: "%", group: "État" },
+  sold_occupied_discount: { label: "Vendu occupé", unit: "%", group: "Juridique" },
   max_cumulative_pct: { label: "Plafond ajustements", unit: "%", group: "Plafonnement" },
 };
 
@@ -69,7 +69,7 @@ function ConfigPanel({ valuationId, onRecalculate }) {
     setSaving(true);
     try {
       await api.updateAlgorithmConfig(config);
-      toast.success("Coefficients sauvegard\u00e9s ! Relancez l'estimation pour voir l'impact.");
+      toast.success("Coefficients sauvegardés ! Relancez l'estimation pour voir l'impact.");
     } catch {
       toast.error("Erreur de sauvegarde");
     } finally {
@@ -89,7 +89,7 @@ function ConfigPanel({ valuationId, onRecalculate }) {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <p className="text-xs uppercase tracking-widest text-zinc-400 font-mono">Param\u00e8tres du mod\u00e8le</p>
+          <p className="text-xs uppercase tracking-widest text-zinc-400 font-mono">Paramètres du modèle</p>
           <p className="text-sm text-zinc-500 mt-1">Modifiez les coefficients puis relancez l'estimation pour voir l'impact.</p>
         </div>
         <div className="flex items-center gap-2">
@@ -116,7 +116,7 @@ function ConfigPanel({ valuationId, onRecalculate }) {
                 <div className="flex items-center gap-1.5">
                   <Input
                     type="number"
-                    step={unit === "\u20ac" || unit === "\u20ac/m\u00b2" ? 100 : 0.5}
+                    step={unit === "€" || unit === "€/m²" ? 100 : 0.5}
                     value={config[key] ?? 0}
                     onChange={(e) => setConfig(prev => ({ ...prev, [key]: parseFloat(e.target.value) || 0 }))}
                     className="rounded-none h-8 font-mono text-xs"
@@ -131,7 +131,7 @@ function ConfigPanel({ valuationId, onRecalculate }) {
 
       <div className="bg-amber-50 border border-amber-200 p-4">
         <p className="text-xs text-amber-800">
-          <strong>Note :</strong> Ces coefficients s'appliquent globalement \u00e0 toutes les estimations. Apr\u00e8s modification, cliquez sur "Relancer l'estimation" pour recalculer avec les nouveaux param\u00e8tres.
+          <strong>Note :</strong> Ces coefficients s'appliquent globalement à toutes les estimations. Après modification, cliquez sur "Relancer l'estimation" pour recalculer avec les nouveaux paramètres.
         </p>
       </div>
     </div>
@@ -154,16 +154,16 @@ export default function Results() {
     if (!data) return;
     const url = `${window.location.origin}/share/${data.share_id}`;
     navigator.clipboard.writeText(url);
-    toast.success("Lien copi\u00e9 !");
+    toast.success("Lien copié !");
   };
 
   const handleDownloadPdf = async () => {
     setPdfLoading(true);
     try {
       await api.downloadPdfReport(id);
-      toast.success("Rapport PDF t\u00e9l\u00e9charg\u00e9 !");
+      toast.success("Rapport PDF téléchargé !");
     } catch {
-      toast.error("Erreur lors de la g\u00e9n\u00e9ration du PDF");
+      toast.error("Erreur lors de la génération du PDF");
     } finally {
       setPdfLoading(false);
     }
@@ -176,7 +176,7 @@ export default function Results() {
       toast.info("Recalcul en cours...");
       const result = await api.estimateValuation(data.request);
       await api.saveValuation(result);
-      toast.success("Estimation recalcul\u00e9e !");
+      toast.success("Estimation recalculée !");
       navigate(`/results/${result.id}`);
       window.location.reload();
     } catch (err) {
@@ -196,7 +196,7 @@ export default function Results() {
   if (!data) return (
     <div className="min-h-screen flex flex-col items-center justify-center gap-4" data-testid="results-not-found">
       <p className="text-zinc-500">Estimation introuvable</p>
-      <Link to="/" className="text-sm underline">Retour \u00e0 l'accueil</Link>
+      <Link to="/" className="text-sm underline">Retour à l'accueil</Link>
     </div>
   );
 
@@ -248,20 +248,25 @@ export default function Results() {
         {/* Price summary */}
         <div className="grid grid-cols-1 md:grid-cols-5 gap-px bg-zinc-200 mb-8 animate-fade-in-up" data-testid="price-summary">
           <div className="bg-white p-6">
-            <p className="text-xs uppercase tracking-[0.2em] text-zinc-400 font-mono mb-2">Prix estim\u00e9</p>
+            <p className="text-xs uppercase tracking-[0.2em] text-zinc-400 font-mono mb-2">Prix estimé</p>
             <p className="font-heading font-bold text-3xl tracking-tight" data-testid="price-median">{formatPrice(data.price_median)}</p>
-            <p className="text-xs text-zinc-400 mt-1 font-mono">{formatPrice(data.price_low)} \u2014 {formatPrice(data.price_high)}</p>
+            <p className="text-xs text-zinc-400 mt-1 font-mono">{formatPrice(data.price_low)} — {formatPrice(data.price_high)}</p>
           </div>
           <div className="bg-white p-6">
-            <p className="text-xs uppercase tracking-[0.2em] text-zinc-400 font-mono mb-2">Prix / m\u00b2</p>
+            <p className="text-xs uppercase tracking-[0.2em] text-zinc-400 font-mono mb-2">Prix / m²</p>
             <p className="font-heading font-bold text-3xl tracking-tight" data-testid="price-per-sqm">{formatPrice(data.price_per_sqm_median)}</p>
-            <p className="text-xs text-zinc-400 mt-1 font-mono">{chars.surface_carrez} m\u00b2 Carrez</p>
+            <p className="text-xs text-zinc-400 mt-1 font-mono">{chars.surface_carrez} m² Carrez</p>
           </div>
           <div className="bg-white p-6">
             <p className="text-xs uppercase tracking-[0.2em] text-zinc-400 font-mono mb-2">Confiance</p>
-            <p className="font-heading font-bold text-3xl tracking-tight" data-testid="confidence-score">{data.confidence_score}<span className="text-lg text-zinc-400">/100</span></p>
-            <div className="w-full bg-zinc-100 h-1.5 mt-3">
-              <div className="bg-black h-1.5 confidence-fill" style={{ width: `${data.confidence_score}%` }} />
+            <p className="font-heading font-bold text-3xl tracking-tight" data-testid="confidence-score">
+              {data.confidence_score}<span className="text-lg text-zinc-400">/100</span>
+            </p>
+            <p className="text-xs mt-1 font-mono" style={{ color: data.confidence_score >= 75 ? "#008A00" : data.confidence_score >= 50 ? "#F59E0B" : "#E60000" }}>
+              {data.confidence_detail?.reliability || (data.confidence_score >= 75 ? "HAUTE" : data.confidence_score >= 50 ? "MOYENNE" : "BASSE")}
+            </p>
+            <div className="w-full bg-zinc-100 h-1.5 mt-2">
+              <div className="h-1.5 confidence-fill" style={{ width: `${data.confidence_score}%`, backgroundColor: data.confidence_score >= 75 ? "#008A00" : data.confidence_score >= 50 ? "#F59E0B" : "#E60000" }} />
             </div>
           </div>
           <div className="bg-white p-6">
@@ -271,7 +276,7 @@ export default function Results() {
           </div>
           {data.market_data?.market_position && (
             <div className="bg-white p-6">
-              <p className="text-xs uppercase tracking-[0.2em] text-zinc-400 font-mono mb-2">Position march\u00e9</p>
+              <p className="text-xs uppercase tracking-[0.2em] text-zinc-400 font-mono mb-2">Position marché</p>
               <p className="font-heading font-bold text-3xl tracking-tight" data-testid="market-position-badge" style={{
                 color: data.market_data.market_position.diff_pct > 5 ? "#008A00" : data.market_data.market_position.diff_pct < -5 ? "#E60000" : "#18181B"
               }}>
@@ -288,10 +293,10 @@ export default function Results() {
         <Tabs defaultValue="hypotheses" className="animate-fade-in-up stagger-2" data-testid="results-tabs">
           <TabsList className="bg-zinc-100 rounded-none p-0 h-10 flex-wrap">
             <TabsTrigger value="hypotheses" className="rounded-none text-xs data-[state=active]:bg-black data-[state=active]:text-white h-10 px-4" data-testid="tab-hypotheses">
-              <Lightbulb className="w-3.5 h-3.5 mr-1.5" /> Hypoth\u00e8ses
+              <Lightbulb className="w-3.5 h-3.5 mr-1.5" /> Hypothèses
             </TabsTrigger>
             <TabsTrigger value="marche" className="rounded-none text-xs data-[state=active]:bg-black data-[state=active]:text-white h-10 px-4" data-testid="tab-marche">
-              <ShoppingBag className="w-3.5 h-3.5 mr-1.5" /> March\u00e9
+              <ShoppingBag className="w-3.5 h-3.5 mr-1.5" /> Marché
             </TabsTrigger>
             <TabsTrigger value="expert" className="rounded-none text-xs data-[state=active]:bg-black data-[state=active]:text-white h-10 px-4" data-testid="tab-expert">
               <Brain className="w-3.5 h-3.5 mr-1.5" /> Expert
@@ -306,7 +311,7 @@ export default function Results() {
               <Shield className="w-3.5 h-3.5 mr-1.5" /> Risques & Projections
             </TabsTrigger>
             <TabsTrigger value="parametres" className="rounded-none text-xs data-[state=active]:bg-black data-[state=active]:text-white h-10 px-4" data-testid="tab-parametres">
-              <Settings className="w-3.5 h-3.5 mr-1.5" /> Param\u00e8tres
+              <Settings className="w-3.5 h-3.5 mr-1.5" /> Paramètres
             </TabsTrigger>
             <TabsTrigger value="documents" className="rounded-none text-xs data-[state=active]:bg-black data-[state=active]:text-white h-10 px-4" data-testid="tab-documents">
               <FileText className="w-3.5 h-3.5 mr-1.5" /> Documents
@@ -314,6 +319,26 @@ export default function Results() {
           </TabsList>
 
           <TabsContent value="hypotheses" className="mt-6" data-testid="tab-content-hypotheses">
+            {/* Confidence detail */}
+            {data.confidence_detail?.components && (
+              <div className="border border-zinc-200 p-6 mb-6">
+                <p className="text-xs uppercase tracking-widest text-zinc-400 font-mono mb-4">Score de confiance : {data.confidence_score}/100 — {data.confidence_detail.reliability}</p>
+                <div className="space-y-3">
+                  {Object.values(data.confidence_detail.components).map((comp, i) => (
+                    <div key={i} className="flex items-center gap-4">
+                      <div className="w-32 text-xs text-zinc-600 font-medium">{comp.label}</div>
+                      <div className="flex-1">
+                        <div className="w-full bg-zinc-100 h-2 rounded-full">
+                          <div className="h-2 rounded-full" style={{ width: `${(comp.score / comp.max) * 100}%`, backgroundColor: comp.score / comp.max >= 0.7 ? "#008A00" : comp.score / comp.max >= 0.4 ? "#F59E0B" : "#E60000" }} />
+                        </div>
+                      </div>
+                      <div className="w-16 text-right text-xs font-mono text-zinc-500">{comp.score}/{comp.max}</div>
+                      <div className="w-48 text-xs text-zinc-400 hidden sm:block">{comp.detail}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             <HypothesesPanel adjustments={data.adjustments || []} marketData={data.market_data || {}} />
           </TabsContent>
 
