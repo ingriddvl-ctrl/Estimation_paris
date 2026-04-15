@@ -2341,7 +2341,9 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 import io
 
-# Color palette
+PDF_BLUE = HexColor("#2563EB")
+PDF_BLUE_LIGHT = HexColor("#EFF6FF")
+PDF_YELLOW = HexColor("#F59E0B")
 PDF_BLACK = HexColor("#18181B")
 PDF_GRAY = HexColor("#71717A")
 PDF_LIGHT = HexColor("#F4F4F5")
@@ -2351,44 +2353,45 @@ PDF_WHITE = white
 
 def build_pdf_styles():
     styles = getSampleStyleSheet()
-    styles.add(ParagraphStyle(name="H1", fontSize=22, leading=26, textColor=PDF_BLACK, spaceAfter=6))
-    styles.add(ParagraphStyle(name="H2", fontSize=14, leading=18, textColor=PDF_BLACK, spaceAfter=4, spaceBefore=14))
-    styles.add(ParagraphStyle(name="H3", fontSize=11, leading=14, textColor=PDF_BLACK, spaceAfter=3, spaceBefore=8))
-    styles.add(ParagraphStyle(name="Body", fontSize=9, leading=13, textColor=PDF_GRAY))
-    styles.add(ParagraphStyle(name="BodyBold", fontSize=9, leading=13, textColor=PDF_BLACK, fontName="Helvetica-Bold"))
-    styles.add(ParagraphStyle(name="Small", fontSize=7.5, leading=10, textColor=PDF_GRAY))
-    styles.add(ParagraphStyle(name="SmallBold", fontSize=7.5, leading=10, textColor=PDF_BLACK, fontName="Helvetica-Bold"))
-    styles.add(ParagraphStyle(name="Price", fontSize=28, leading=32, textColor=PDF_BLACK, fontName="Helvetica-Bold"))
-    styles.add(ParagraphStyle(name="Caption", fontSize=8, leading=10, textColor=PDF_GRAY, alignment=TA_CENTER))
-    styles.add(ParagraphStyle(name="Footer", fontSize=7, leading=9, textColor=PDF_GRAY, alignment=TA_CENTER))
+    styles.add(ParagraphStyle(name="H1", fontSize=20, leading=24, textColor=PDF_BLACK, spaceAfter=6, fontName="Helvetica-Bold"))
+    styles.add(ParagraphStyle(name="H2", fontSize=13, leading=17, textColor=PDF_BLACK, spaceAfter=4, spaceBefore=10, fontName="Helvetica-Bold"))
+    styles.add(ParagraphStyle(name="H3", fontSize=10, leading=14, textColor=PDF_BLACK, spaceAfter=3, spaceBefore=6, fontName="Helvetica-Bold"))
+    styles.add(ParagraphStyle(name="Body", fontSize=8.5, leading=12, textColor=PDF_GRAY))
+    styles.add(ParagraphStyle(name="BodyBold", fontSize=8.5, leading=12, textColor=PDF_BLACK, fontName="Helvetica-Bold"))
+    styles.add(ParagraphStyle(name="Small", fontSize=7, leading=9, textColor=PDF_GRAY))
+    styles.add(ParagraphStyle(name="SmallBold", fontSize=7, leading=9, textColor=PDF_BLACK, fontName="Helvetica-Bold"))
+    styles.add(ParagraphStyle(name="Caption", fontSize=7.5, leading=10, textColor=PDF_GRAY, alignment=TA_CENTER))
+    styles.add(ParagraphStyle(name="Footer", fontSize=6.5, leading=8, textColor=PDF_GRAY, alignment=TA_CENTER))
     return styles
 
 def fmt_price(n):
     if not n: return "—"
-    return f"{int(n):,}".replace(",", " ") + " \u20ac"
+    return f"{int(n):,}".replace(",", " ") + " €"
 
 def fmt_pct(n):
-    if not n: return "0%"
+    if not n and n != 0: return "0%"
     return f"{'+' if n > 0 else ''}{n:.1f}%"
 
 def _header_footer(canvas, doc, address, date_str):
     canvas.saveState()
     w, h = A4
-    # Header line
+    # Header
     canvas.setStrokeColor(HexColor("#E4E4E7"))
     canvas.setLineWidth(0.5)
-    canvas.line(20*mm, h - 18*mm, w - 20*mm, h - 18*mm)
-    canvas.setFont("Helvetica-Bold", 9)
+    canvas.line(18*mm, h - 16*mm, w - 18*mm, h - 16*mm)
+    canvas.setFont("Helvetica-Bold", 10)
     canvas.setFillColor(PDF_BLACK)
-    canvas.drawString(20*mm, h - 15*mm, "VALORISATEUR")
-    canvas.setFont("Helvetica", 7)
-    canvas.setFillColor(PDF_GRAY)
-    canvas.drawRightString(w - 20*mm, h - 15*mm, f"Rapport d'estimation — {date_str}")
-    # Footer
-    canvas.line(20*mm, 15*mm, w - 20*mm, 15*mm)
+    canvas.drawString(18*mm, h - 13*mm, "Ingrid")
+    canvas.setFillColor(PDF_BLUE)
+    canvas.drawString(18*mm + canvas.stringWidth("Ingrid", "Helvetica-Bold", 10) + 2, h - 13*mm, "Immo")
     canvas.setFont("Helvetica", 6.5)
-    canvas.drawString(20*mm, 10*mm, f"{address}")
-    canvas.drawRightString(w - 20*mm, 10*mm, f"Page {doc.page}")
+    canvas.setFillColor(PDF_GRAY)
+    canvas.drawRightString(w - 18*mm, h - 13*mm, f"Rapport d'estimation — {date_str}")
+    # Footer
+    canvas.line(18*mm, 13*mm, w - 18*mm, 13*mm)
+    canvas.setFont("Helvetica", 6)
+    canvas.drawString(18*mm, 9*mm, f"{address}")
+    canvas.drawRightString(w - 18*mm, 9*mm, f"Page {doc.page}")
     canvas.restoreState()
 
 
@@ -2409,6 +2412,8 @@ async def generate_pdf_report(valuation_id: str):
     adjustments = doc_data.get("adjustments", [])
     comparables = doc_data.get("comparables", [])
     risks = doc_data.get("risks", [])
+    conf_detail = doc_data.get("confidence_detail", {})
+    conf_components = conf_detail.get("components", {})
 
     address = loc.get("address", "Adresse inconnue")
     date_str = doc_data.get("created_at", "")[:10]
@@ -2417,52 +2422,77 @@ async def generate_pdf_report(valuation_id: str):
     buffer = io.BytesIO()
     pdf = SimpleDocTemplate(
         buffer, pagesize=A4,
-        leftMargin=20*mm, rightMargin=20*mm,
-        topMargin=24*mm, bottomMargin=22*mm,
+        leftMargin=18*mm, rightMargin=18*mm,
+        topMargin=22*mm, bottomMargin=20*mm,
     )
 
     story = []
 
     # ──── PAGE 1: Cover ────
-    story.append(Spacer(1, 30*mm))
-    story.append(Paragraph("RAPPORT D'ESTIMATION", styles["H1"]))
-    story.append(Paragraph("IMMOBILIÈRE", styles["H1"]))
-    story.append(Spacer(1, 8*mm))
-    story.append(HRFlowable(width="100%", thickness=1, color=PDF_BLACK))
-    story.append(Spacer(1, 6*mm))
+    story.append(Spacer(1, 20*mm))
+    story.append(Paragraph("RAPPORT D'ESTIMATION IMMOBILIÈRE", styles["H1"]))
+    story.append(Spacer(1, 4*mm))
+    story.append(HRFlowable(width="100%", thickness=2, color=PDF_BLUE))
+    story.append(Spacer(1, 5*mm))
     story.append(Paragraph(address, styles["H2"]))
     story.append(Paragraph(f"{loc.get('postal_code', '')} {loc.get('city', '')}", styles["Body"]))
-    story.append(Spacer(1, 10*mm))
+    story.append(Spacer(1, 8*mm))
 
-    # Price summary table
+    # Price summary
     cover_data = [
-        ["ESTIMATION", "FOURCHETTE", "PRIX/M²", "CONFIANCE"],
+        ["ESTIMATION", "FOURCHETTE", "PRIX/m²", "CONFIANCE"],
         [
             fmt_price(doc_data.get("price_median")),
             f"{fmt_price(doc_data.get('price_low'))} — {fmt_price(doc_data.get('price_high'))}",
             fmt_price(doc_data.get("price_per_sqm_median")),
-            f"{doc_data.get('confidence_score', 0)}/100",
+            f"{doc_data.get('confidence_score', 0)}/100 ({conf_detail.get('reliability', '')})",
         ],
     ]
-    cover_table = Table(cover_data, colWidths=[42*mm, 52*mm, 38*mm, 30*mm])
+    cover_table = Table(cover_data, colWidths=[40*mm, 52*mm, 35*mm, 45*mm])
     cover_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), PDF_BLACK),
+        ("BACKGROUND", (0, 0), (-1, 0), PDF_BLUE),
         ("TEXTCOLOR", (0, 0), (-1, 0), PDF_WHITE),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
         ("FONTSIZE", (0, 0), (-1, 0), 7),
         ("FONTNAME", (0, 1), (-1, 1), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 1), (-1, 1), 11),
+        ("FONTSIZE", (0, 1), (-1, 1), 10),
         ("ALIGN", (0, 0), (-1, -1), "CENTER"),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("BOTTOMPADDING", (0, 0), (-1, 0), 6),
-        ("TOPPADDING", (0, 1), (-1, 1), 10),
-        ("BOTTOMPADDING", (0, 1), (-1, 1), 10),
+        ("BOTTOMPADDING", (0, 0), (-1, 0), 5),
+        ("TOPPADDING", (0, 1), (-1, 1), 8),
+        ("BOTTOMPADDING", (0, 1), (-1, 1), 8),
         ("GRID", (0, 0), (-1, -1), 0.5, HexColor("#E4E4E7")),
     ]))
     story.append(cover_table)
-    story.append(Spacer(1, 8*mm))
+    story.append(Spacer(1, 6*mm))
 
-    # Property characteristics summary
+    # Negotiation range if available
+    nego = mkt.get("estimated_transaction_range", {})
+    if nego and nego.get("mid"):
+        story.append(Paragraph("Fourchette de transaction probable (après négociation 2026)", styles["H3"]))
+        nego_data = [
+            ["SCÉNARIO", "PRIX ESTIMÉ", "NÉGOCIATION"],
+            ["Haute (négo -3%)", fmt_price(nego.get("high")), "-3%"],
+            ["Centrale (négo -6%)", fmt_price(nego.get("mid")), "-6%"],
+            ["Basse (négo -8%)", fmt_price(nego.get("low")), "-8%"],
+        ]
+        nego_table = Table(nego_data, colWidths=[60*mm, 55*mm, 55*mm])
+        nego_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), PDF_LIGHT),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, 0), 7),
+            ("FONTSIZE", (0, 1), (-1, -1), 8),
+            ("FONTNAME", (1, 1), (1, -1), "Helvetica-Bold"),
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("GRID", (0, 0), (-1, -1), 0.3, HexColor("#E4E4E7")),
+        ]))
+        story.append(nego_table)
+        story.append(Spacer(1, 6*mm))
+
+    # Characteristics table
     chars_items = [
         ("Surface Carrez", f"{chars.get('surface_carrez', '?')} m²"),
         ("Pièces / Chambres", f"{chars.get('rooms', '?')} / {chars.get('bedrooms', '?')}"),
@@ -2471,52 +2501,63 @@ async def generate_pdf_report(valuation_id: str):
         ("Vue", chars.get("view", "?").replace("_", " ").capitalize()),
         ("DPE / GES", f"{cond.get('dpe', '?')} / {cond.get('ges', '?')}"),
         ("État général", cond.get("general_state", "?").replace("_", " ").capitalize()),
-        ("Immeuble", bldg.get("building_type", "?").replace("_", " ").capitalize()),
+        ("Style immeuble", bldg.get("construction_era", "?").replace("_", " ").capitalize()),
+        ("Type immeuble", bldg.get("building_type", "?").replace("_", " ").capitalize()),
         ("Parking", chars.get("parking", "aucun").replace("_", " ").capitalize()),
     ]
     ext_type = chars.get('exterior_type', 'aucun')
     ext_surf = chars.get('exterior_surface', 0)
-    ext_label = f"{ext_type} ({ext_surf} m²)" if ext_surf else ext_type
-    chars_items.append(("Extérieur", ext_label))
-    char_data = [["CARACTÉRISTIQUE", "VALEUR"]]
-    for label, val in chars_items:
-        char_data.append([label, val])
-    char_table = Table(char_data, colWidths=[80*mm, 82*mm])
+    if ext_surf:
+        chars_items.append(("Extérieur", f"{ext_type.replace('_', ' ')} ({ext_surf} m²)"))
+    char_data = [["CARACTÉRISTIQUE", "VALEUR"]] + [[l, v] for l, v in chars_items]
+    char_table = Table(char_data, colWidths=[70*mm, 102*mm])
     char_table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), PDF_LIGHT),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
         ("FONTSIZE", (0, 0), (-1, 0), 7),
         ("FONTSIZE", (0, 1), (-1, -1), 8),
-        ("FONTNAME", (0, 1), (0, -1), "Helvetica"),
         ("FONTNAME", (1, 1), (1, -1), "Helvetica-Bold"),
         ("TEXTCOLOR", (0, 1), (0, -1), PDF_GRAY),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5),
         ("GRID", (0, 0), (-1, -1), 0.3, HexColor("#E4E4E7")),
     ]))
     story.append(Paragraph("Caractéristiques du bien", styles["H2"]))
     story.append(char_table)
 
-    # Market position
-    if pos:
-        story.append(Spacer(1, 6*mm))
-        story.append(Paragraph("Position sur le marché", styles["H2"]))
-        mp_text = f"Votre bien est estimé à {fmt_price(pos.get('estimated_sqm'))}/m², "
-        mp_text += f"soit {fmt_pct(pos.get('diff_pct'))} par rapport à la moyenne de la zone ({fmt_price(pos.get('arr_avg'))}/m²). "
-        mp_text += f"Position : <b>{pos.get('label', '=')}</b> — {pos.get('description', '')}"
-        story.append(Paragraph(mp_text, styles["Body"]))
+    # Confidence detail
+    if conf_components:
+        story.append(Spacer(1, 5*mm))
+        story.append(Paragraph(f"Score de confiance : {doc_data.get('confidence_score', 0)}/100 — {conf_detail.get('reliability', '')}", styles["H3"]))
+        conf_data = [["COMPOSANTE", "SCORE", "DÉTAIL"]]
+        for comp in conf_components.values():
+            conf_data.append([comp.get("label", ""), f"{comp.get('score', 0)}/{comp.get('max', 0)}", comp.get("detail", "")])
+        conf_table = Table(conf_data, colWidths=[55*mm, 25*mm, 92*mm])
+        conf_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), PDF_LIGHT),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, 0), 6.5),
+            ("FONTSIZE", (0, 1), (-1, -1), 7.5),
+            ("ALIGN", (1, 0), (1, -1), "CENTER"),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("GRID", (0, 0), (-1, -1), 0.3, HexColor("#E4E4E7")),
+        ]))
+        story.append(conf_table)
 
-    story.append(Spacer(1, 4*mm))
-    story.append(Paragraph(f"Source des données : {mkt.get('base_source', 'DVF Cerema')} — Période : {mkt.get('comparables_period', '2020-2025')} — {mkt.get('total_comparables', 0)} transactions analysées", styles["Small"]))
+    story.append(Spacer(1, 3*mm))
+    story.append(Paragraph(f"Source : {mkt.get('base_source', 'DVF Cerema')} — {mkt.get('comparables_period', '24 derniers mois')} — {mkt.get('total_comparables', 0)} transactions", styles["Small"]))
+    if mkt.get("market_trend_correction") and mkt["market_trend_correction"] < -0.5:
+        story.append(Paragraph(f"Correction tendance marché appliquée : {fmt_pct(mkt['market_trend_correction'])}", styles["SmallBold"]))
 
     story.append(PageBreak())
 
-    # ──── PAGE 2: Adjustments detail ────
+    # ──── PAGE 2: Adjustments ────
     story.append(Paragraph("Décomposition du prix", styles["H1"]))
     story.append(Spacer(1, 3*mm))
-    story.append(Paragraph(f"Prix de base médian : {fmt_price(mkt.get('base_price_sqm'))}/m² (source : {mkt.get('base_source', 'DVF')})", styles["BodyBold"]))
+    story.append(Paragraph(f"Prix de base médian : {fmt_price(mkt.get('base_price_sqm'))}/m² ({mkt.get('base_source', 'DVF')})", styles["BodyBold"]))
     story.append(Spacer(1, 4*mm))
 
     if adjustments:
@@ -2524,159 +2565,219 @@ async def generate_pdf_report(valuation_id: str):
         for adj in adjustments:
             atype = adj.get("type", "pct")
             val = adj.get("value", 0)
-            if atype == "pct":
-                impact_str = fmt_pct(val)
-            elif atype == "flat":
-                impact_str = fmt_price(val)
-            elif atype == "flat_per_sqm":
-                impact_str = f"{fmt_price(val)}/m²"
-            else:
-                impact_str = str(val)
+            impact_str = fmt_pct(val) if atype == "pct" else fmt_price(val)
             adj_data.append([adj.get("name", ""), impact_str, adj.get("detail", "")])
+        adj_data.append(["TOTAL", fmt_pct(mkt.get("adjustment_pct", 0)) + (f" + {fmt_price(mkt.get('adjustment_flat', 0))}" if mkt.get("adjustment_flat") else ""), ""])
 
-        # Summary row
-        adj_data.append(["TOTAL AJUSTEMENTS", fmt_pct(mkt.get("adjustment_pct", 0)) + (f" + {fmt_price(mkt.get('adjustment_flat', 0))}" if mkt.get("adjustment_flat") else ""), ""])
-
-        adj_table = Table(adj_data, colWidths=[45*mm, 35*mm, 82*mm])
+        adj_table = Table(adj_data, colWidths=[50*mm, 30*mm, 92*mm])
         adj_table.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), PDF_BLACK),
+            ("BACKGROUND", (0, 0), (-1, 0), PDF_BLUE),
             ("TEXTCOLOR", (0, 0), (-1, 0), PDF_WHITE),
             ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
             ("FONTSIZE", (0, 0), (-1, 0), 7),
-            ("FONTSIZE", (0, 1), (-1, -1), 8),
+            ("FONTSIZE", (0, 1), (-1, -1), 7.5),
             ("FONTNAME", (0, 1), (0, -1), "Helvetica-Bold"),
-            ("FONTNAME", (1, 1), (1, -1), "Helvetica-Bold"),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("TOPPADDING", (0, 0), (-1, -1), 4),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("LEFTPADDING", (0, 0), (-1, -1), 5),
             ("GRID", (0, 0), (-1, -1), 0.3, HexColor("#E4E4E7")),
-            # Last row = total
             ("BACKGROUND", (0, -1), (-1, -1), PDF_LIGHT),
             ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
         ]))
         story.append(adj_table)
-    else:
-        story.append(Paragraph("Aucun ajustement appliqué.", styles["Body"]))
 
-    story.append(Spacer(1, 6*mm))
-
-    # Hypotheses detail
+    story.append(Spacer(1, 5*mm))
     story.append(Paragraph("Hypothèses détaillées", styles["H2"]))
-    story.append(Spacer(1, 2*mm))
     for adj in adjustments:
         hyp = adj.get("hypothesis", "")
         if hyp:
-            story.append(Paragraph(f"<b>{adj.get('name', '')}</b> ({fmt_pct(adj.get('value', 0)) if adj.get('type') == 'pct' else fmt_price(adj.get('value', 0))})", styles["H3"]))
+            val = adj.get("value", 0)
+            impact = fmt_pct(val) if adj.get("type") == "pct" else fmt_price(val)
+            story.append(Paragraph(f"<b>{adj.get('name', '')}</b> ({impact})", styles["H3"]))
             story.append(Paragraph(hyp, styles["Body"]))
-            story.append(Spacer(1, 2*mm))
+            story.append(Spacer(1, 1.5*mm))
 
     story.append(PageBreak())
 
     # ──── PAGE 3: Comparables ────
     story.append(Paragraph("Transactions comparables (DVF)", styles["H1"]))
+    story.append(Paragraph(f"{len(comparables)} transactions dans un rayon de {mkt.get('search_radius_m', 500)}m", styles["Body"]))
     story.append(Spacer(1, 3*mm))
-    story.append(Paragraph(f"{len(comparables)} transactions réelles trouvées dans un rayon de 500m", styles["Body"]))
-    story.append(Spacer(1, 4*mm))
 
     if comparables:
-        comp_display = comparables[:20]
-        comp_data = [["DATE", "ADRESSE", "SURFACE", "PRIX", "PRIX/M²"]]
-        for c in comp_display:
+        comp_data = [["DATE", "ADRESSE", "SURFACE", "PRIX", "PRIX/m²"]]
+        for c in comparables[:20]:
             comp_data.append([
                 str(c.get("date", ""))[:10],
-                str(c.get("address", ""))[:35],
+                str(c.get("address", ""))[:40],
                 f"{c.get('surface', 0):.0f} m²",
                 fmt_price(c.get("price")),
                 fmt_price(c.get("price_per_sqm")),
             ])
-        comp_table = Table(comp_data, colWidths=[22*mm, 60*mm, 22*mm, 30*mm, 28*mm])
+        comp_table = Table(comp_data, colWidths=[20*mm, 62*mm, 18*mm, 30*mm, 25*mm])
         comp_table.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), PDF_BLACK),
+            ("BACKGROUND", (0, 0), (-1, 0), PDF_BLUE),
             ("TEXTCOLOR", (0, 0), (-1, 0), PDF_WHITE),
             ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
             ("FONTSIZE", (0, 0), (-1, 0), 6.5),
-            ("FONTSIZE", (0, 1), (-1, -1), 7),
+            ("FONTSIZE", (0, 1), (-1, -1), 6.5),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("TOPPADDING", (0, 0), (-1, -1), 3),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+            ("LEFTPADDING", (0, 0), (-1, -1), 3),
             ("GRID", (0, 0), (-1, -1), 0.3, HexColor("#E4E4E7")),
             ("ROWBACKGROUNDS", (0, 1), (-1, -1), [PDF_WHITE, PDF_LIGHT]),
         ]))
         story.append(comp_table)
-    else:
-        story.append(Paragraph("Aucune transaction comparable trouvée.", styles["Body"]))
 
-    story.append(Spacer(1, 6*mm))
+    story.append(Spacer(1, 5*mm))
 
-    # ──── Risks ────
+    # Risks
     story.append(Paragraph("Analyse des risques", styles["H2"]))
-    story.append(Spacer(1, 3*mm))
-
     if risks:
         for r in risks:
             level = r.get("level", "info")
-            color_hex = "#E60000" if level == "critical" else "#F59E0B" if level == "warning" else "#71717A"
-            story.append(Paragraph(f'<font color="{color_hex}">●</font> <b>{r.get("type", "")}</b> — {r.get("detail", "")}', styles["Body"]))
-            story.append(Spacer(1, 1.5*mm))
+            c_hex = "#E60000" if level == "critical" else "#F59E0B" if level == "warning" else "#71717A"
+            story.append(Paragraph(f'<font color="{c_hex}">●</font> <b>{r.get("type", "")}</b> — {r.get("detail", "")}', styles["Body"]))
+            story.append(Spacer(1, 1*mm))
     else:
         story.append(Paragraph("Aucun risque majeur identifié.", styles["Body"]))
 
-    story.append(Spacer(1, 10*mm))
-
-    # Legal information
-    story.append(Paragraph("Informations légales", styles["H2"]))
-    legal_items = [
-        ("Type de propriété", legal.get("ownership_type", "pleine_propriete").replace("_", " ").capitalize()),
-        ("Taxe foncière", fmt_price(legal.get("property_tax")) if legal.get("property_tax") else "Non renseignée"),
+    # Copro info
+    story.append(Spacer(1, 5*mm))
+    story.append(Paragraph("Copropriété et charges", styles["H2"]))
+    copro_items = [
         ("Charges annuelles", fmt_price(bldg.get("annual_charges")) if bldg.get("annual_charges") else "Non renseignées"),
+        ("Taxe foncière", fmt_price(legal.get("property_tax")) if legal.get("property_tax") else "Non renseignée"),
         ("Syndic", bldg.get("syndic_type", "?").capitalize()),
         ("Lots copropriété", str(bldg.get("total_lots", "?"))),
+        ("Travaux votés", bldg.get("ongoing_procedures", "aucune").replace("_", " ").capitalize()),
+        ("Type propriété", legal.get("ownership_type", "pleine_propriete").replace("_", " ").capitalize()),
     ]
-    for label, val in legal_items:
+    for label, val in copro_items:
         story.append(Paragraph(f"<b>{label}</b> : {val}", styles["Body"]))
+
+    # Cost of acquisition
+    price_median = doc_data.get("price_median", 0)
+    if price_median:
+        story.append(Spacer(1, 5*mm))
+        story.append(Paragraph("Coût total d'acquisition estimé", styles["H2"]))
+        notary = round(price_median * 0.075)
+        renov_map = {"A": 0, "B": 0, "C": 0, "D": 0, "E": 300, "F": 600, "G": 1000}
+        renov = round((renov_map.get(cond.get("dpe", "D"), 0)) * (chars.get("surface_carrez", 70)))
+        total = price_median + notary + renov
+        cost_data = [
+            ["POSTE", "MONTANT"],
+            ["Prix du bien", fmt_price(price_median)],
+            ["Frais de notaire (~7.5%)", fmt_price(notary)],
+        ]
+        if renov > 0:
+            cost_data.append([f"Rénovation énergétique DPE {cond.get('dpe', '?')}", fmt_price(renov)])
+        cost_data.append(["TOTAL ACQUISITION", fmt_price(total)])
+        cost_table = Table(cost_data, colWidths=[100*mm, 72*mm])
+        cost_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), PDF_LIGHT),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, 0), 7),
+            ("FONTSIZE", (0, 1), (-1, -1), 8),
+            ("FONTNAME", (1, 1), (1, -1), "Helvetica-Bold"),
+            ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("GRID", (0, 0), (-1, -1), 0.3, HexColor("#E4E4E7")),
+            ("BACKGROUND", (0, -1), (-1, -1), PDF_BLUE_LIGHT),
+            ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
+        ]))
+        story.append(cost_table)
 
     story.append(PageBreak())
 
-    # ──── PAGE 4: Disclaimer & methodology ────
-    story.append(Paragraph("Méthodologie", styles["H1"]))
-    story.append(Spacer(1, 4*mm))
-    methodology_text = """Cette estimation repose sur une méthodologie transparente en 4 étapes :
+    # ──── PAGE 4: Projections + Context + Methodology ────
+    story.append(Paragraph("Contexte marché 2026", styles["H1"]))
+    story.append(Spacer(1, 2*mm))
+    ctx_items = [
+        ("Correction depuis 2022", "-10 à -15% sur Paris"),
+        ("Taux d'intérêt", "Stabilisés à 3.0-3.5% sur 20 ans"),
+        ("Marge de négociation", "5-8% en moyenne (marché acheteur)"),
+        ("Volume transactions", "-25% vs pic 2022, mais +8% vs 2024"),
+        ("DPE F-G", "Décote -10 à -20%, interdiction location progressive"),
+        ("Perspectives", "Stabilisation 2026, reprise modérée +2-3% en 2027"),
+    ]
+    for label, val in ctx_items:
+        story.append(Paragraph(f"<b>{label}</b> : {val}", styles["Body"]))
+        story.append(Spacer(1, 1*mm))
 
-<b>1. Collecte des données</b> — Les transactions immobilières réelles sont récupérées via l'API DVF du Cerema (Demandes de Valeurs Foncières), base officielle alimentée par la DGFiP. Seules les ventes depuis 2020 dans un rayon de 500m sont retenues.
+    # Projections
+    if price_median:
+        story.append(Spacer(1, 4*mm))
+        story.append(Paragraph("Projections à 5, 7, 10 et 12 ans", styles["H2"]))
+        dpe = cond.get("dpe", "D")
+        dpe_malus_map = {"A": 2, "B": 1, "C": 0, "D": 0, "E": -1, "F": -4, "G": -8}
+        malus = dpe_malus_map.get(dpe, 0)
+        scenarios = [
+            ("Optimiste", {5: 12, 7: 18, 10: 28, 12: 35}, "Taux BCE 2%, reprise demande"),
+            ("Central", {5: 4, 7: 7, 10: 12, 12: 16}, "Taux stables 3%, marché sélectif"),
+            ("Pessimiste", {5: -6, 7: -8, 10: -5, 12: -2}, "Taux en hausse, récession"),
+        ]
+        proj_data = [["SCÉNARIO", "5 ANS", "7 ANS", "10 ANS", "12 ANS"]]
+        for name, rates, desc in scenarios:
+            row = [f"{name}\n({desc})"]
+            for y in [5, 7, 10, 12]:
+                rate = (rates[y] + malus * (y / 10)) / 100
+                projected = round(price_median * (1 + rate))
+                row.append(f"{fmt_price(projected)}\n({'+' if rate >= 0 else ''}{round(rate*100, 1)}%)")
+            proj_data.append(row)
 
-<b>2. Calcul du prix de base</b> — La médiane tronquée (trimmed median) des prix au m² est calculée en excluant les 10% de valeurs extrêmes (hautes et basses) pour éliminer les transactions atypiques.
+        proj_table = Table(proj_data, colWidths=[42*mm, 34*mm, 34*mm, 34*mm, 34*mm])
+        proj_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), PDF_BLUE),
+            ("TEXTCOLOR", (0, 0), (-1, 0), PDF_WHITE),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, 0), 7),
+            ("FONTSIZE", (0, 1), (-1, -1), 7),
+            ("ALIGN", (1, 0), (-1, -1), "CENTER"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("GRID", (0, 0), (-1, -1), 0.3, HexColor("#E4E4E7")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [PDF_WHITE, PDF_LIGHT]),
+        ]))
+        story.append(proj_table)
+        story.append(Spacer(1, 2*mm))
+        story.append(Paragraph("Ces projections sont indicatives et basées sur des hypothèses macroéconomiques. Le DPE influence les projections (malus F-G). Hors inflation et travaux.", styles["Small"]))
 
-<b>3. Ajustements</b> — Des coefficients de pondération sont appliqués pour chaque critère (étage, exposition, DPE, vue, état, etc.). Ces coefficients sont basés sur les études notariales et les recommandations d'experts. Un plafonnement des ajustements cumulés est appliqué pour éviter toute surestimation.
-
-<b>4. Fourchette de prix</b> — Le prix final est présenté avec une fourchette de ±8% (haute confiance) à ±12% (confiance modérée), selon le nombre de comparables disponibles."""
-
-    story.append(Paragraph(methodology_text, styles["Body"]))
     story.append(Spacer(1, 8*mm))
+    story.append(HRFlowable(width="100%", thickness=0.5, color=HexColor("#E4E4E7")))
+    story.append(Spacer(1, 4*mm))
 
-    story.append(Paragraph("Avertissement", styles["H2"]))
-    disclaimer = """Ce rapport est fourni à titre indicatif et ne constitue pas une expertise immobilière au sens de la Charte de l'Expertise en Évaluation Immobilière. Les données utilisées proviennent de sources publiques (DVF, Géorisques, ADEME) et peuvent comporter des inexactitudes. Cette estimation ne saurait engager la responsabilité de ses auteurs. Pour toute transaction immobilière, nous recommandons de consulter un expert agréé, un notaire ou un agent immobilier qualifié."""
-    story.append(Paragraph(disclaimer, styles["Body"]))
-    story.append(Spacer(1, 6*mm))
-    story.append(Paragraph(f"Rapport généré le {datetime.now(timezone.utc).strftime('%d/%m/%Y à %H:%M')} UTC", styles["Small"]))
+    # Methodology
+    story.append(Paragraph("Méthodologie", styles["H2"]))
+    meth = ("1. <b>Collecte DVF</b> — Transactions réelles via l'API Cerema (DGFiP), rayon progressif 200-500m, 24 derniers mois. "
+            "2. <b>Prix de base</b> — Médiane pondérée des prix/m², filtrage outliers IQR+1.5σ, pondération par cercle concentrique. "
+            "3. <b>Ajustements</b> — Coefficients par critère (étage, DPE, vue, taille, tendance marché 2024-2026). Plafonnement cumulé. "
+            "4. <b>Fourchette</b> — ±8% (haute confiance) à ±12% (confiance modérée).")
+    story.append(Paragraph(meth, styles["Body"]))
 
-    # Build PDF
+    story.append(Spacer(1, 5*mm))
+    story.append(Paragraph("Avertissement", styles["H3"]))
+    story.append(Paragraph("Ce rapport est fourni à titre indicatif. Il ne constitue pas une expertise au sens de la Charte de l'Expertise en Évaluation Immobilière. Consultez un expert agréé pour toute transaction.", styles["Body"]))
+    story.append(Spacer(1, 4*mm))
+    story.append(Paragraph(f"Rapport généré par Ingrid Immo le {datetime.now(timezone.utc).strftime('%d/%m/%Y à %H:%M')} UTC", styles["Small"]))
+
+    # Build
     def on_page(canvas, doc):
         _header_footer(canvas, doc, address, date_str)
-
     pdf.build(story, onFirstPage=on_page, onLaterPages=on_page)
     buffer.seek(0)
 
     safe_address = address.replace(" ", "_").replace("/", "-")[:50]
-    filename = f"Estimation_{safe_address}_{date_str}.pdf"
-
+    filename = f"IngridImmo_{safe_address}_{date_str}.pdf"
     return Response(
         content=buffer.getvalue(),
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'}
     )
-
 
 # ─── Listing Analysis PDF Report ───
 
