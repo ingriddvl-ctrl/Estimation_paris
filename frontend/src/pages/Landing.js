@@ -1,41 +1,41 @@
 import { useNavigate, Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
-import { MapPin, BarChart3, Shield, Calculator, Clock, Share2, FileSearch, ArrowRight, Building2 } from "lucide-react";
+import { MapPin, BarChart3, Shield, Calculator, Clock, Share2, FileSearch, ArrowRight, Sparkles, TrendingUp, Zap } from "lucide-react";
 
 const features = [
-  { icon: MapPin, title: "Données DVF réelles", desc: "Transactions vérifiées des 24 derniers mois dans votre rue, filtrées et pondérées par pertinence" },
-  { icon: BarChart3, title: "Décomposition transparente", desc: "Chaque euro de surcote ou décote est justifié — étage, DPE, vue, taille, tendance marché" },
-  { icon: Shield, title: "Analyse de risques", desc: "DPE, risques naturels, copropriété, urbanisme — tout est vérifié automatiquement" },
-  { icon: Calculator, title: "Simulateur d'achat", desc: "Frais de notaire, crédit, assurance — le coût réel total de votre acquisition" },
-  { icon: Clock, title: "Correction marché 2026", desc: "Intègre la tendance baissière post-2022 et les marges de négociation actuelles" },
-  { icon: Share2, title: "Rapport PDF pro", desc: "Rapport complet exportable, partageable avec votre banquier ou notaire" },
+  { icon: MapPin, title: "Données DVF officielles", desc: "Transactions vérifiées des 24 derniers mois autour de votre adresse, filtrées et pondérées." },
+  { icon: BarChart3, title: "Transparence totale", desc: "Chaque ajustement est détaillé : étage, DPE, vue, taille, tendance marché. Rien n'est caché." },
+  { icon: Shield, title: "Analyse de risques", desc: "DPE, Loi Climat, Géorisques, copropriété — on vérifie tout pour que vous achetiez sereinement." },
+  { icon: TrendingUp, title: "Projections 5-12 ans", desc: "3 scénarios de valorisation intégrant les tendances macro et l'impact DPE sur votre bien." },
+  { icon: Calculator, title: "Coût réel d'acquisition", desc: "Prix + notaire + rénovation DPE + charges = le vrai budget, sans mauvaise surprise." },
+  { icon: Share2, title: "Rapport PDF pro", desc: "Un rapport complet à partager avec votre banquier, notaire ou agent. Classe et convaincant." },
 ];
 
 export default function Landing() {
   const navigate = useNavigate();
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-slate-50 to-white" data-testid="landing-page">
+    <div className="min-h-screen bg-white" data-testid="landing-page">
       {/* Header */}
-      <header className="border-b border-slate-200/60 bg-white/80 backdrop-blur-xl sticky top-0 z-50" data-testid="main-header">
+      <header className="border-b border-zinc-100 sticky top-0 bg-white/90 backdrop-blur-xl z-50" data-testid="main-header">
         <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 bg-gradient-to-br from-slate-800 to-slate-600 rounded-lg flex items-center justify-center shadow-sm">
-              <Building2 className="w-5 h-5 text-white" strokeWidth={1.5} />
+          <div className="flex items-center gap-2.5">
+            <div className="w-9 h-9 bg-blue-600 rounded-xl flex items-center justify-center shadow-lg shadow-blue-600/20">
+              <Sparkles className="w-5 h-5 text-white" strokeWidth={2} />
             </div>
-            <div>
-              <span className="font-bold text-lg tracking-tight text-slate-800">Valorisateur</span>
-              <span className="font-medium text-lg tracking-tight text-teal-600 ml-1">Ingrid</span>
+            <div className="flex items-baseline gap-1">
+              <span className="font-extrabold text-xl tracking-tight text-zinc-900">Ingrid</span>
+              <span className="font-bold text-xl tracking-tight text-blue-600">Immo</span>
             </div>
           </div>
           <nav className="flex items-center gap-6">
-            <Link to="/analyze" className="text-sm text-slate-500 hover:text-slate-800 transition-colors" data-testid="nav-analyze">
+            <Link to="/analyze" className="text-sm text-zinc-500 hover:text-blue-600 transition-colors" data-testid="nav-analyze">
               Analyser une fiche
             </Link>
-            <Link to="/history" className="text-sm text-slate-500 hover:text-slate-800 transition-colors" data-testid="nav-history">
+            <Link to="/history" className="text-sm text-zinc-500 hover:text-blue-600 transition-colors" data-testid="nav-history">
               Historique
             </Link>
-            <Link to="/settings" className="text-sm text-slate-500 hover:text-slate-800 transition-colors" data-testid="nav-settings">
+            <Link to="/settings" className="text-sm text-zinc-500 hover:text-blue-600 transition-colors" data-testid="nav-settings">
               Paramètres
             </Link>
           </nav>
@@ -45,82 +45,98 @@ export default function Landing() {
       {/* Hero */}
       <section className="max-w-7xl mx-auto px-6 pt-20 pb-16">
         <div className="max-w-3xl">
-          <div className="inline-flex items-center gap-2 px-3 py-1.5 bg-teal-50 border border-teal-200/60 rounded-full mb-6 animate-fade-in-up">
-            <div className="w-2 h-2 bg-teal-500 rounded-full animate-pulse" />
-            <span className="text-xs font-medium text-teal-700">Paris & Petite Couronne — Données DVF en temps réel</span>
+          <div className="inline-flex items-center gap-2 px-4 py-2 bg-yellow-50 border border-yellow-200 rounded-full mb-8 animate-fade-in-up">
+            <Zap className="w-4 h-4 text-yellow-500" />
+            <span className="text-sm font-medium text-yellow-700">Paris & Petite Couronne — Connecté aux données DVF en temps réel</span>
           </div>
-          <h1 className="font-bold text-4xl sm:text-5xl lg:text-6xl tracking-tight leading-[1.1] mb-6 text-slate-800 animate-fade-in-up stagger-1" data-testid="hero-title">
-            Estimez au plus juste,
+          <h1 className="font-extrabold text-5xl sm:text-6xl lg:text-7xl tracking-tight leading-[1.05] mb-6 text-zinc-900 animate-fade-in-up stagger-1" data-testid="hero-title">
+            Votre bien vaut
             <br />
-            <span className="bg-gradient-to-r from-teal-600 to-emerald-600 bg-clip-text text-transparent">donnée par donnée.</span>
+            <span className="text-blue-600">combien, vraiment ?</span>
           </h1>
-          <p className="text-base sm:text-lg text-slate-500 leading-relaxed mb-10 max-w-xl animate-fade-in-up stagger-2" data-testid="hero-subtitle">
-            L'outil de valorisation le plus transparent du marché. Chaque critère est pondéré, chaque ajustement est justifié et modifiable. Connecté aux bases publiques DVF, cadastre et INSEE.
+          <p className="text-lg text-zinc-500 leading-relaxed mb-10 max-w-xl animate-fade-in-up stagger-2" data-testid="hero-subtitle">
+            Fini les estimations opaques. Ingrid Immo vous montre exactement d'où vient chaque euro de votre estimation — données publiques, hypothèses modifiables, zéro boîte noire.
           </p>
           <div className="flex items-center gap-4 flex-wrap animate-fade-in-up stagger-3">
             <Button
               onClick={() => navigate("/new")}
-              className="h-12 px-8 bg-gradient-to-r from-slate-800 to-slate-700 text-white hover:from-slate-700 hover:to-slate-600 rounded-lg font-medium text-sm tracking-wide shadow-lg shadow-slate-200"
+              className="h-13 px-8 bg-blue-600 text-white hover:bg-blue-700 rounded-xl font-semibold text-base shadow-lg shadow-blue-600/25 transition-all hover:shadow-xl hover:shadow-blue-600/30 hover:-translate-y-0.5"
               data-testid="start-valuation-btn"
             >
-              Nouvelle estimation <ArrowRight className="w-4 h-4 ml-2" />
+              Lancer une estimation <ArrowRight className="w-5 h-5 ml-2" />
             </Button>
             <Button
               variant="outline"
               onClick={() => navigate("/analyze")}
-              className="h-12 px-8 rounded-lg border-slate-300 hover:bg-slate-50 font-medium text-sm tracking-wide"
+              className="h-13 px-8 rounded-xl border-zinc-200 hover:border-blue-300 hover:bg-blue-50 font-semibold text-base transition-all"
               data-testid="analyze-listing-btn"
             >
-              <FileSearch className="w-4 h-4 mr-2" /> Analyser une fiche agence
+              <FileSearch className="w-5 h-5 mr-2" /> Analyser une fiche
             </Button>
           </div>
         </div>
       </section>
 
-      {/* Stats bar */}
+      {/* Stats */}
       <section className="max-w-7xl mx-auto px-6 pb-16">
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {[
-            { value: "DVF+", label: "Source officielle DGFiP" },
-            { value: "24 mois", label: "Transactions récentes" },
-            { value: "200m", label: "Rayon de recherche prioritaire" },
-            { value: "2026", label: "Correction tendance intégrée" },
+            { value: "DVF+", label: "Source officielle DGFiP", accent: "text-blue-600" },
+            { value: "24 mois", label: "Transactions récentes", accent: "text-blue-600" },
+            { value: "200m", label: "Rayon prioritaire", accent: "text-blue-600" },
+            { value: "2026", label: "Tendance marché intégrée", accent: "text-yellow-500" },
           ].map((s) => (
-            <div key={s.label} className="bg-white border border-slate-200/60 rounded-lg p-5 text-center">
-              <p className="text-2xl font-bold text-slate-800">{s.value}</p>
-              <p className="text-xs text-slate-400 mt-1">{s.label}</p>
+            <div key={s.label} className="bg-zinc-50 rounded-xl p-5 text-center hover:bg-blue-50 transition-colors">
+              <p className={`text-2xl font-extrabold ${s.accent}`}>{s.value}</p>
+              <p className="text-xs text-zinc-400 mt-1 font-medium">{s.label}</p>
             </div>
           ))}
         </div>
       </section>
 
-      {/* Features grid */}
+      {/* Features */}
       <section className="max-w-7xl mx-auto px-6 pb-20">
-        <div className="border-t border-slate-200/60 pt-16">
-          <p className="text-xs uppercase tracking-[0.2em] text-slate-400 font-mono mb-2">Fonctionnalités</p>
-          <h2 className="text-2xl font-bold text-slate-800 mb-8">Tout ce qu'il faut pour estimer avec précision</h2>
+        <div className="border-t border-zinc-100 pt-16">
+          <div className="flex items-center gap-3 mb-8">
+            <div className="w-8 h-1 bg-yellow-400 rounded-full" />
+            <p className="text-sm font-bold text-zinc-400 uppercase tracking-widest">Ce qu'Ingrid Immo fait pour vous</p>
+          </div>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {features.map((f, i) => (
               <div
                 key={f.title}
-                className={`bg-white border border-slate-200/60 rounded-lg p-6 hover:border-teal-300 hover:shadow-md transition-all duration-200 animate-fade-in-up stagger-${i + 1}`}
+                className={`bg-white border border-zinc-100 rounded-xl p-6 hover:border-blue-200 hover:shadow-lg hover:shadow-blue-600/5 transition-all duration-200 hover:-translate-y-0.5 animate-fade-in-up stagger-${i + 1}`}
                 data-testid={`feature-${i}`}
               >
-                <div className="w-10 h-10 bg-teal-50 rounded-lg flex items-center justify-center mb-4">
-                  <f.icon className="w-5 h-5 text-teal-600" strokeWidth={1.5} />
+                <div className="w-11 h-11 bg-blue-50 rounded-xl flex items-center justify-center mb-4">
+                  <f.icon className="w-5 h-5 text-blue-600" strokeWidth={1.5} />
                 </div>
-                <h3 className="font-semibold text-base mb-2 text-slate-800">{f.title}</h3>
-                <p className="text-sm text-slate-500 leading-relaxed">{f.desc}</p>
+                <h3 className="font-bold text-base mb-2 text-zinc-800">{f.title}</h3>
+                <p className="text-sm text-zinc-500 leading-relaxed">{f.desc}</p>
               </div>
             ))}
           </div>
         </div>
       </section>
 
+      {/* CTA */}
+      <section className="max-w-7xl mx-auto px-6 pb-20">
+        <div className="bg-blue-600 rounded-2xl p-10 md:p-14 text-center shadow-xl shadow-blue-600/20">
+          <h2 className="text-white font-extrabold text-3xl mb-4">Prêt à estimer votre bien ?</h2>
+          <p className="text-blue-200 mb-8 max-w-lg mx-auto">C'est gratuit, transparent, et ça prend 3 minutes. Vos données ne sont pas revendues.</p>
+          <Button
+            onClick={() => navigate("/new")}
+            className="h-13 px-10 bg-yellow-400 text-zinc-900 hover:bg-yellow-300 rounded-xl font-bold text-base shadow-lg transition-all hover:-translate-y-0.5"
+          >
+            C'est parti ! <ArrowRight className="w-5 h-5 ml-2" />
+          </Button>
+        </div>
+      </section>
+
       {/* Footer */}
-      <footer className="border-t border-slate-200/60 py-8 bg-white">
-        <div className="max-w-7xl mx-auto px-6 flex items-center justify-between text-xs text-slate-400">
-          <span>Valorisateur Ingrid — Données publiques DVF, INSEE, ADEME</span>
+      <footer className="border-t border-zinc-100 py-8">
+        <div className="max-w-7xl mx-auto px-6 flex items-center justify-between text-xs text-zinc-400">
+          <span>Ingrid Immo — Données publiques DVF, INSEE, ADEME, Géorisques</span>
           <span className="font-mono">2026</span>
         </div>
       </footer>
