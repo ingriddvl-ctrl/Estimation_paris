@@ -744,10 +744,11 @@ async def _fetch_dvf_raw(lat, lon, radius):
     bbox = f"{lon-delta},{lat-delta},{lon+delta},{lat+delta}"
     for attempt in range(3):
         try:
-            async with httpx.AsyncClient(timeout=15) as cl:
+            async with httpx.AsyncClient(timeout=20) as cl:
+                # Fetch page 1
                 resp = await cl.get(
                     "https://apidf-preprod.cerema.fr/dvf_opendata/geomutations/",
-                    params={"in_bbox": bbox, "page_size": 100, "anneemut_min": 2024}
+                    params={"in_bbox": bbox, "page_size": 100, "anneemut_min": 2023, "page": 1}
                 )
                 if resp.status_code == 200:
                     data = resp.json()
@@ -755,6 +756,20 @@ async def _fetch_dvf_raw(lat, lon, radius):
                         c = _parse_dvf_feature_raw(feat, lat, lon, radius)
                         if c:
                             raw.append(c)
+                    # Check if there are more pages
+                    total = data.get("count", 0)
+                    if total > 100:
+                        # Fetch page 2
+                        resp2 = await cl.get(
+                            "https://apidf-preprod.cerema.fr/dvf_opendata/geomutations/",
+                            params={"in_bbox": bbox, "page_size": 100, "anneemut_min": 2023, "page": 2}
+                        )
+                        if resp2.status_code == 200:
+                            data2 = resp2.json()
+                            for feat in data2.get("features", []):
+                                c = _parse_dvf_feature_raw(feat, lat, lon, radius)
+                                if c:
+                                    raw.append(c)
                     return raw
                 elif resp.status_code == 503:
                     await asyncio.sleep(1)
@@ -1757,6 +1772,144 @@ async def delete_document(file_id: str):
     if result.modified_count == 0:
         raise HTTPException(status_code=404, detail="Document not found")
     return {"status": "deleted"}
+
+
+@api_router.post("/documents/analyze/{file_id}")
+async def analyze_document(file_id: str):
+    """
+    Analyze an uploaded document (PV d'AG, charges, diagnostics) to extract
+    actionable data for the valuation: planned works, heating type, charges trends, etc.
+    """
+    record = await db.documents.find_one({"id": file_id, "is_deleted": False})
+    if not record:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    try:
+        data, _ = get_object(record["storage_path"])
+    except Exception:
+        raise HTTPException(status_code=500, detail="Cannot read file")
+
+    text = ""
+    ext = record.get("original_filename", "").split(".")[-1].lower()
+
+    # Extract text from PDF
+    if ext == "pdf":
+        try:
+            import io
+            try:
+                import pymupdf as fitz
+            except ImportError:
+                try:
+                    import fitz
+                except ImportError:
+                    fitz = None
+            if fitz:
+                doc = fitz.open(stream=data, filetype="pdf")
+                for page in doc:
+                    text += page.get_text() + "\n"
+                doc.close()
+        except Exception as e:
+            logger.warning(f"PDF text extraction failed: {e}")
+
+    # Extract text from plain text files
+    elif ext in ("txt", "csv"):
+        try:
+            text = data.decode("utf-8", errors="replace")
+        except Exception:
+            pass
+
+    if not text:
+        return {"status": "no_text", "message": "Impossible d'extraire le texte du document. Formats supportés : PDF, TXT."}
+
+    text_lower = text.lower()
+
+    # Analyze for copro works and risks
+    analysis = {
+        "file_id": file_id,
+        "category": record.get("category"),
+        "filename": record.get("original_filename"),
+        "text_length": len(text),
+        "detected_items": [],
+        "copro_risks": [],
+        "financial_data": {},
+    }
+
+    # ── Detect planned works ──
+    works_keywords = {
+        "ravalement": ("Ravalement de façade", "warning", "Ravalement voté ou discuté en AG. Coût moyen : 15 000 à 30 000 € par lot."),
+        "toiture": ("Réfection toiture", "warning", "Travaux de toiture mentionnés. Coût moyen : 10 000 à 25 000 € par lot."),
+        "ascenseur": ("Mise aux normes ascenseur", "warning", "Ascenseur à rénover ou mettre aux normes. Coût : 5 000 à 20 000 € par lot."),
+        "chaudière": ("Remplacement chaudière", "critical" if "fioul" in text_lower else "warning", "Remplacement de chaudière collective prévu. Si fioul : coût 15 000 à 40 000 € par lot."),
+        "fioul": ("Chauffage fioul", "critical", "Chauffage collectif fioul détecté. Obligation de remplacement — coût majeur à prévoir."),
+        "étanchéité": ("Étanchéité", "warning", "Problèmes d'étanchéité mentionnés. Terrasse ou toiture à traiter."),
+        "canalisations": ("Canalisations", "warning", "Travaux de canalisation évoqués. Plomberie collective vétuste."),
+        "parties communes": ("Rénovation parties communes", "info", "Travaux de parties communes mentionnés."),
+        "impayés": ("Impayés de charges", "critical", "Impayés de charges détectés en copropriété. Risque financier."),
+        "dette": ("Dette copropriété", "critical", "Endettement de la copropriété mentionné."),
+        "procédure": ("Procédure judiciaire", "warning", "Procédure juridique en cours dans la copropriété."),
+    }
+
+    for keyword, (label, level, detail) in works_keywords.items():
+        if keyword in text_lower:
+            analysis["detected_items"].append({"keyword": keyword, "label": label, "level": level, "detail": detail})
+
+    # ── Extract financial data ──
+    import re as re_mod
+    # Look for charge amounts
+    charge_matches = re_mod.findall(r'charges?\s*(?:annuelles?|trimestrielles?)?\s*[:=]?\s*([\d\s,.]+)\s*(?:€|euros?)', text_lower)
+    if charge_matches:
+        amounts = []
+        for m in charge_matches:
+            try:
+                val = float(m.replace(" ", "").replace(",", "."))
+                if 100 < val < 50000:
+                    amounts.append(val)
+            except ValueError:
+                pass
+        if amounts:
+            analysis["financial_data"]["charges_found"] = amounts
+
+    # Look for work cost estimates
+    cost_matches = re_mod.findall(r'(?:devis|montant|coût|cout|budget)\s*[:=]?\s*([\d\s,.]+)\s*(?:€|euros?)', text_lower)
+    if cost_matches:
+        costs = []
+        for m in cost_matches:
+            try:
+                val = float(m.replace(" ", "").replace(",", "."))
+                if val > 1000:
+                    costs.append(val)
+            except ValueError:
+                pass
+        if costs:
+            analysis["financial_data"]["work_costs_found"] = costs
+
+    # ── Generate copro risk summary ──
+    critical_count = sum(1 for item in analysis["detected_items"] if item["level"] == "critical")
+    warning_count = sum(1 for item in analysis["detected_items"] if item["level"] == "warning")
+
+    if critical_count > 0:
+        analysis["copro_risks"].append({
+            "level": "critical",
+            "summary": f"{critical_count} risque(s) critique(s) détecté(s) dans le document. Vérifiez les détails ci-dessous.",
+        })
+    if warning_count > 0:
+        analysis["copro_risks"].append({
+            "level": "warning",
+            "summary": f"{warning_count} point(s) d'attention détecté(s). Des travaux pourraient impacter la valeur du bien.",
+        })
+    if not analysis["detected_items"]:
+        analysis["copro_risks"].append({
+            "level": "info",
+            "summary": "Aucun risque majeur détecté dans ce document.",
+        })
+
+    # Save analysis results to the document record
+    await db.documents.update_one(
+        {"id": file_id},
+        {"$set": {"analysis": analysis, "analyzed_at": datetime.now(timezone.utc).isoformat()}}
+    )
+
+    return analysis
 
 # ─── Market Listings (Offres en cours) ───
 
