@@ -39,15 +39,21 @@ export default function RiskPanel({ risks = [], dpe, currentPrice = 0, surface =
 
   const scenarios = [
     {
-      name: "Optimiste", color: "#008A00", desc: "Baisse des taux vers 2.5%, reprise de la demande",
+      name: "Optimiste", color: "#008A00",
+      desc: "Baisse des taux vers 2.5%, reprise de la demande",
+      hypotheses: "Taux BCE en baisse vers 2%, taux immobiliers \u00e0 2.5% sur 20 ans, croissance PIB +1.5%, ch\u00f4mage stable, reprise des transactions (+15%), retour des investisseurs institutionnels, r\u00e9formes fiscales favorables.",
       rates: { 5: 12, 7: 18, 10: 28, 12: 35 }
     },
     {
-      name: "Central", color: "#F59E0B", desc: "Taux stables 3-3.5%, reprise modérée",
+      name: "Central", color: "#F59E0B",
+      desc: "Taux stables 3-3.5%, reprise mod\u00e9r\u00e9e",
+      hypotheses: "Taux BCE stables \u00e0 3%, taux immobiliers 3-3.5%, croissance molle +0.8%, march\u00e9 s\u00e9lectif (bons DPE OK, passoires en baisse), volumes en l\u00e9g\u00e8re hausse, prix stables puis +2-3%/an \u00e0 partir de 2027.",
       rates: { 5: 4, 7: 7, 10: 12, 12: 16 }
     },
     {
-      name: "Pessimiste", color: "#E60000", desc: "Taux en hausse, récession, correction prolongée",
+      name: "Pessimiste", color: "#E60000",
+      desc: "Taux en hausse, r\u00e9cession, correction prolong\u00e9e",
+      hypotheses: "OAT 10 ans en hausse (tensions g\u00e9opolitiques, d\u00e9ficit public), taux immobiliers repassent au-dessus de 4%, r\u00e9cession europ\u00e9enne, ch\u00f4mage en hausse, volumes en chute (-20%), prix en baisse sur Paris de -5 \u00e0 -10% suppl\u00e9mentaires.",
       rates: { 5: -6, 7: -8, 10: -5, 12: -2 }
     },
   ];
@@ -201,6 +207,9 @@ export default function RiskPanel({ risks = [], dpe, currentPrice = 0, surface =
                       : <TrendingDown className="w-4 h-4" style={{ color: sc.color }} />}
                     <span className="font-semibold text-sm" style={{ color: sc.color }}>{sc.name}</span>
                     <span className="text-xs text-zinc-500 ml-auto hidden sm:inline">{sc.desc}</span>
+                  </div>
+                  <div className="px-4 py-2 bg-zinc-50 border-b border-zinc-100">
+                    <p className="text-xs text-zinc-500"><strong>Hypothèses :</strong> {sc.hypotheses}</p>
                   </div>
                   <div className="grid grid-cols-4 gap-0">
                     {[5, 7, 10, 12].map((y) => {
