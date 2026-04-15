@@ -91,10 +91,10 @@ export default function ListingAnalyzer() {
       <header className="border-b border-zinc-200 sticky top-0 bg-white/80 backdrop-blur-xl z-50">
         <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
           <Link to="/" className="flex items-center gap-3" data-testid="analyzer-nav-home">
-            <div className="w-8 h-8 bg-gradient-to-br from-slate-800 to-slate-600 rounded-lg flex items-center justify-center">
+            <div className="w-8 h-8 bg-blue-600 rounded-xl flex items-center justify-center shadow-sm shadow-blue-600/20">
               <span className="text-white font-bold text-sm">V</span>
             </div>
-            <span className="font-bold text-lg tracking-tight text-slate-800">Valorisateur</span><span className="font-medium text-lg text-teal-600 ml-1">Ingrid</span>
+            <span className="font-extrabold text-lg tracking-tight text-zinc-900">Ingrid</span><span className="font-bold text-lg text-blue-600 ml-1">Immo</span>
           </Link>
           <div className="flex items-center gap-4">
             {result?.analysis_id && (
