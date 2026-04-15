@@ -39,8 +39,8 @@ export default function SharedView() {
       <header className="border-b border-zinc-200">
         <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-gradient-to-br from-slate-800 to-slate-600 rounded-lg flex items-center justify-center"><span className="text-white font-bold text-sm">V</span></div>
-            <span className="font-bold text-lg tracking-tight text-slate-800">Valorisateur</span><span className="font-medium text-lg text-teal-600 ml-1">Ingrid</span>
+            <div className="w-8 h-8 bg-blue-600 rounded-xl flex items-center justify-center shadow-sm shadow-blue-600/20"><span className="text-white font-bold text-sm">V</span></div>
+            <span className="font-extrabold text-lg tracking-tight text-zinc-900">Ingrid</span><span className="font-bold text-lg text-blue-600 ml-1">Immo</span>
           </div>
           <span className="text-xs font-mono text-zinc-400 bg-zinc-100 px-3 py-1">LECTURE SEULE</span>
         </div>
