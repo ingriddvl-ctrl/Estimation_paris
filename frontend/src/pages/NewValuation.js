@@ -313,7 +313,7 @@ function Step1({ form, update, searchAddress, suggestions, selectAddress }) {
               <SelectTrigger className="rounded-none h-11" data-testid="floor-select"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="0">RDC</SelectItem>
-                {[1,2,3,4,5,6,7,8,9,10].map(f => <SelectItem key={f} value={String(f)}>{f === 1 ? "1er" : `${f}e`} étage</SelectItem>)}
+                {[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20].map(f => <SelectItem key={f} value={String(f)}>{f === 1 ? "1er" : `${f}e`} étage</SelectItem>)}
               </SelectContent>
             </Select>
           </FieldGroup>
@@ -379,6 +379,18 @@ function Step2({ form, update }) {
             </SelectContent>
           </Select>
         </FieldGroup>
+        {(form.characteristics.property_type === "duplex" || form.characteristics.property_type === "triplex" || form.characteristics.property_type === "souplex") && (
+          <FieldGroup label={form.characteristics.property_type === "souplex" ? "Étage inférieur (sous-sol)" : "Étage supérieur"} overline={form.characteristics.property_type.charAt(0).toUpperCase() + form.characteristics.property_type.slice(1)}>
+            <Select value={String(form.characteristics.second_floor || (form.characteristics.property_type === "souplex" ? -1 : (form.location.floor || 0) + 1))} onValueChange={(v) => update("characteristics", "second_floor", parseInt(v))}>
+              <SelectTrigger className="rounded-none h-11"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {form.characteristics.property_type === "souplex" && <SelectItem value="-1">Sous-sol</SelectItem>}
+                <SelectItem value="0">RDC</SelectItem>
+                {[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20].map(f => <SelectItem key={f} value={String(f)}>{f === 1 ? "1er" : `${f}e`} étage</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </FieldGroup>
+        )}
         <FieldGroup label="Exposition" overline="Luminosité">
           <Select value={form.characteristics.exposure} onValueChange={(v) => update("characteristics", "exposure", v)}>
             <SelectTrigger className="rounded-none h-11" data-testid="exposure-select"><SelectValue /></SelectTrigger>
@@ -405,7 +417,7 @@ function Step2({ form, update }) {
             </SelectContent>
           </Select>
         </FieldGroup>
-        <FieldGroup label="Extérieur">
+        <FieldGroup label="Extérieur(s)">
           <Select value={form.characteristics.exterior_type} onValueChange={(v) => update("characteristics", "exterior_type", v)}>
             <SelectTrigger className="rounded-none h-11" data-testid="exterior-select"><SelectValue /></SelectTrigger>
             <SelectContent>
@@ -414,11 +426,13 @@ function Step2({ form, update }) {
               <SelectItem value="terrasse">Terrasse</SelectItem>
               <SelectItem value="loggia">Loggia</SelectItem>
               <SelectItem value="jardin">Jardin privatif</SelectItem>
+              <SelectItem value="balcon_terrasse">Balcon + Terrasse</SelectItem>
+              <SelectItem value="plusieurs_balcons">Plusieurs balcons</SelectItem>
             </SelectContent>
           </Select>
         </FieldGroup>
         {form.characteristics.exterior_type !== "aucun" && (
-          <FieldGroup label="Surface extérieure (m²)">
+          <FieldGroup label="Surface extérieure totale (m²)">
             <Input type="number" min="0" value={form.characteristics.exterior_surface} onChange={(e) => update("characteristics", "exterior_surface", parseFloat(e.target.value) || 0)} className="rounded-none h-11" data-testid="exterior-surface-input" />
           </FieldGroup>
         )}
@@ -443,6 +457,19 @@ function Step2({ form, update }) {
             </SelectContent>
           </Select>
         </FieldGroup>
+        {form.characteristics.parking !== "aucun" && (
+          <FieldGroup label="Parking inclus dans le prix ?" overline="Parking">
+            <div className="space-y-3">
+              <div className="flex items-center gap-3 h-11">
+                <Switch checked={form.characteristics.parking_included !== false} onCheckedChange={(v) => update("characteristics", "parking_included", v)} />
+                <span className="text-sm text-zinc-600">{form.characteristics.parking_included !== false ? "Inclus dans le prix" : "En sus du prix"}</span>
+              </div>
+              {form.characteristics.parking_included === false && (
+                <Input type="number" min="0" value={form.characteristics.parking_price || 0} onChange={(e) => update("characteristics", "parking_price", parseFloat(e.target.value) || 0)} placeholder="Prix du parking (€)" className="rounded-none h-11" />
+              )}
+            </div>
+          </FieldGroup>
+        )}
         <FieldGroup label="Cave">
           <div className="flex items-center gap-3 h-11">
             <Switch checked={form.characteristics.cave} onCheckedChange={(v) => update("characteristics", "cave", v)} data-testid="cave-switch" />
@@ -457,18 +484,18 @@ function Step2({ form, update }) {
 function Step3({ form, update }) {
   return (
     <div data-testid="step-3-form">
-      <h2 className="font-heading font-bold text-2xl sm:text-3xl tracking-tight mb-2">État et qualité</h2>
-      <p className="text-sm text-zinc-500 mb-8">L'état du bien et le DPE ont un impact direct et mesurable sur la valorisation.</p>
+      <h2 className="font-heading font-bold text-2xl sm:text-3xl tracking-tight mb-2">État et qualité du bien</h2>
+      <p className="text-sm text-zinc-500 mb-8">L'état intérieur, le DPE et les équipements ont un impact direct sur la valorisation.</p>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         <FieldGroup label="État général" overline="Rénovation">
           <Select value={form.condition.general_state} onValueChange={(v) => update("condition", "general_state", v)}>
             <SelectTrigger className="rounded-none h-11" data-testid="state-select"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="a_renover">À rénover entièrement</SelectItem>
-              <SelectItem value="rafraichissement">Rafraîchissement</SelectItem>
-              <SelectItem value="bon_etat">Bon état</SelectItem>
-              <SelectItem value="refait_neuf">Refait à neuf</SelectItem>
-              <SelectItem value="luxe">Standing luxe</SelectItem>
+              <SelectItem value="rafraichissement">Rafraîchissement à prévoir</SelectItem>
+              <SelectItem value="bon_etat">Bon état — habitable en l'état</SelectItem>
+              <SelectItem value="refait_neuf">Refait à neuf récemment</SelectItem>
+              <SelectItem value="luxe">Standing luxe / architecte</SelectItem>
             </SelectContent>
           </Select>
         </FieldGroup>
@@ -480,7 +507,7 @@ function Step3({ form, update }) {
             </SelectContent>
           </Select>
         </FieldGroup>
-        <FieldGroup label="GES">
+        <FieldGroup label="GES (émissions CO₂)">
           <Select value={form.condition.ges} onValueChange={(v) => update("condition", "ges", v)}>
             <SelectTrigger className="rounded-none h-11" data-testid="ges-select"><SelectValue /></SelectTrigger>
             <SelectContent>
@@ -488,49 +515,84 @@ function Step3({ form, update }) {
             </SelectContent>
           </Select>
         </FieldGroup>
-        <FieldGroup label="Cuisine" overline="Équipements">
+        <FieldGroup label="Configuration cuisine" overline="Cuisine">
+          <Select value={form.condition.kitchen_config || "fermee"} onValueChange={(v) => update("condition", "kitchen_config", v)}>
+            <SelectTrigger className="rounded-none h-11"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="fermee">Cuisine fermée (séparée)</SelectItem>
+              <SelectItem value="semi_ouverte">Semi-ouverte</SelectItem>
+              <SelectItem value="ouverte">Ouverte sur le séjour</SelectItem>
+              <SelectItem value="americaine">Américaine / îlot central</SelectItem>
+            </SelectContent>
+          </Select>
+        </FieldGroup>
+        <FieldGroup label="Équipement cuisine">
           <Select value={form.condition.kitchen_quality} onValueChange={(v) => update("condition", "kitchen_quality", v)}>
             <SelectTrigger className="rounded-none h-11" data-testid="kitchen-select"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="non_equipee">Non équipée</SelectItem>
               <SelectItem value="equipee_basique">Équipée basique</SelectItem>
-              <SelectItem value="amenagee">Aménagée semi-ouverte</SelectItem>
-              <SelectItem value="haut_gamme">Ouverte haut de gamme</SelectItem>
+              <SelectItem value="equipee_moderne">Équipée moderne</SelectItem>
+              <SelectItem value="haut_gamme">Haut de gamme (Bulthaup, Poggenpohl...)</SelectItem>
             </SelectContent>
           </Select>
         </FieldGroup>
-        <FieldGroup label="Salle de bain">
+        <FieldGroup label="État de la cuisine">
+          <Select value={form.condition.kitchen_state || "bon"} onValueChange={(v) => update("condition", "kitchen_state", v)}>
+            <SelectTrigger className="rounded-none h-11"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="a_refaire">À refaire</SelectItem>
+              <SelectItem value="correct">Correct / fonctionnel</SelectItem>
+              <SelectItem value="bon">Bon état</SelectItem>
+              <SelectItem value="neuf">Neuf / refait récemment</SelectItem>
+            </SelectContent>
+          </Select>
+        </FieldGroup>
+        <FieldGroup label="Salle(s) de bain" overline="Sanitaires">
           <Select value={form.condition.bathroom_quality} onValueChange={(v) => update("condition", "bathroom_quality", v)}>
             <SelectTrigger className="rounded-none h-11" data-testid="bathroom-select"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="a_refaire">À refaire</SelectItem>
-              <SelectItem value="standard">Standard</SelectItem>
-              <SelectItem value="recent">Récent</SelectItem>
-              <SelectItem value="haut_gamme">Haut de gamme</SelectItem>
+              <SelectItem value="standard">Standard / correct</SelectItem>
+              <SelectItem value="recent">Récente / moderne</SelectItem>
+              <SelectItem value="haut_gamme">Haut de gamme (douche italienne, design...)</SelectItem>
             </SelectContent>
           </Select>
         </FieldGroup>
-        <FieldGroup label="Revêtement de sol">
+        <FieldGroup label="Type de sol principal" overline="Revêtements">
           <Select value={form.condition.flooring} onValueChange={(v) => update("condition", "flooring", v)}>
             <SelectTrigger className="rounded-none h-11" data-testid="flooring-select"><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="parquet_massif">Parquet massif</SelectItem>
+              <SelectItem value="parquet_hongrie">Parquet point de Hongrie</SelectItem>
+              <SelectItem value="parquet_massif">Parquet massif classique</SelectItem>
+              <SelectItem value="parquet_mosaique">Parquet mosaïque</SelectItem>
               <SelectItem value="parquet_contrecolle">Parquet contrecollé</SelectItem>
+              <SelectItem value="stratifie">Stratifié / sol souple</SelectItem>
               <SelectItem value="carrelage">Carrelage</SelectItem>
-              <SelectItem value="moquette">Moquette</SelectItem>
-              <SelectItem value="stratifie">Stratifié</SelectItem>
-              <SelectItem value="tomettes">Tomettes</SelectItem>
+              <SelectItem value="tomettes">Tomettes anciennes</SelectItem>
               <SelectItem value="beton_cire">Béton ciré</SelectItem>
+              <SelectItem value="moquette">Moquette</SelectItem>
             </SelectContent>
           </Select>
         </FieldGroup>
-        <FieldGroup label="Menuiseries" overline="Isolation">
+        <FieldGroup label="État du sol">
+          <Select value={form.condition.flooring_state || "bon"} onValueChange={(v) => update("condition", "flooring_state", v)}>
+            <SelectTrigger className="rounded-none h-11"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="abime">Abîmé / à remplacer</SelectItem>
+              <SelectItem value="use">Usé mais fonctionnel</SelectItem>
+              <SelectItem value="bon">Bon état</SelectItem>
+              <SelectItem value="neuf">Neuf / poncé récemment</SelectItem>
+            </SelectContent>
+          </Select>
+        </FieldGroup>
+        <FieldGroup label="Fenêtres / Menuiseries" overline="Isolation">
           <Select value={form.condition.windows} onValueChange={(v) => update("condition", "windows", v)}>
             <SelectTrigger className="rounded-none h-11" data-testid="windows-select"><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="simple_vitrage">Simple vitrage</SelectItem>
+              <SelectItem value="simple_vitrage">Simple vitrage (ancien)</SelectItem>
               <SelectItem value="double_vitrage">Double vitrage</SelectItem>
-              <SelectItem value="double_renforce">Double vitrage renforcé</SelectItem>
+              <SelectItem value="double_renforce">Double vitrage renforcé / phonique</SelectItem>
               <SelectItem value="triple_vitrage">Triple vitrage</SelectItem>
             </SelectContent>
           </Select>
@@ -545,22 +607,28 @@ function Step3({ form, update }) {
               <SelectItem value="collectif_fioul">Collectif fioul</SelectItem>
               <SelectItem value="pac">Pompe à chaleur</SelectItem>
               <SelectItem value="sol">Chauffage au sol</SelectItem>
+              <SelectItem value="urbain">Réseau de chaleur urbain</SelectItem>
             </SelectContent>
           </Select>
         </FieldGroup>
-        <FieldGroup label="Diagnostics" overline="Risques">
+        {form.condition.heating === "collectif_fioul" && (
+          <div className="col-span-full bg-amber-50 border border-amber-200 p-4">
+            <p className="text-sm text-amber-800"><strong>Attention :</strong> Le chauffage collectif fioul est voué à disparaître (interdiction depuis 2022). Le remplacement sera à la charge de la copropriété — coût estimé 15 000 à 40 000 € par lot. Ce risque est intégré automatiquement.</p>
+          </div>
+        )}
+        <FieldGroup label="Diagnostics" overline="Risques techniques">
           <div className="space-y-3">
             <div className="flex items-center gap-3">
-              <Switch checked={form.condition.asbestos} onCheckedChange={(v) => update("condition", "asbestos", v)} data-testid="asbestos-switch" />
-              <span className="text-sm">Amiante</span>
+              <Switch checked={form.condition.asbestos} onCheckedChange={(v) => update("condition", "asbestos", v)} />
+              <span className="text-sm text-zinc-600">Amiante détectée</span>
             </div>
             <div className="flex items-center gap-3">
-              <Switch checked={form.condition.lead} onCheckedChange={(v) => update("condition", "lead", v)} data-testid="lead-switch" />
-              <span className="text-sm">Plomb</span>
+              <Switch checked={form.condition.lead} onCheckedChange={(v) => update("condition", "lead", v)} />
+              <span className="text-sm text-zinc-600">Plomb détecté (CREP positif)</span>
             </div>
             <div className="flex items-center gap-3">
-              <Switch checked={form.condition.electrical_compliance} onCheckedChange={(v) => update("condition", "electrical_compliance", v)} data-testid="electrical-switch" />
-              <span className="text-sm">Conformité électrique</span>
+              <Switch checked={form.condition.electrical_compliance} onCheckedChange={(v) => update("condition", "electrical_compliance", v)} />
+              <span className="text-sm text-zinc-600">Électricité aux normes</span>
             </div>
           </div>
         </FieldGroup>
@@ -572,20 +640,25 @@ function Step3({ form, update }) {
 function Step4({ form, update }) {
   return (
     <div data-testid="step-4-form">
-      <h2 className="font-heading font-bold text-2xl sm:text-3xl tracking-tight mb-2">Caractéristiques de l'immeuble</h2>
-      <p className="text-sm text-zinc-500 mb-8">Type d'immeuble, ascenseur, gardien et charges impactent le prix au m².</p>
+      <h2 className="font-heading font-bold text-2xl sm:text-3xl tracking-tight mb-2">Immeuble et copropriété</h2>
+      <p className="text-sm text-zinc-500 mb-8">Le type d'immeuble, son état et les travaux prévus impactent fortement la valorisation.</p>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        <FieldGroup label="Époque de construction" overline="Immeuble">
+        <FieldGroup label="Année de construction" overline="Construction">
+          <Input type="number" min="1700" max="2026" value={form.building.construction_year || ""} onChange={(e) => update("building", "construction_year", parseInt(e.target.value) || null)} placeholder="ex: 1972" className="rounded-none h-11" />
+        </FieldGroup>
+        <FieldGroup label="Style architectural">
           <Select value={form.building.construction_era} onValueChange={(v) => update("building", "construction_era", v)}>
             <SelectTrigger className="rounded-none h-11" data-testid="era-select"><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="avant_1850">Avant 1850</SelectItem>
-              <SelectItem value="haussmannien">Haussmannien (1850–1914)</SelectItem>
-              <SelectItem value="entre_guerres">Entre-deux-guerres</SelectItem>
-              <SelectItem value="post_guerre">Post-guerre (1945–1970)</SelectItem>
+              <SelectItem value="avant_1850">Ancien (avant 1850)</SelectItem>
+              <SelectItem value="haussmannien">Haussmannien classique</SelectItem>
+              <SelectItem value="post_haussmannien">Post-haussmannien / Art Déco</SelectItem>
+              <SelectItem value="entre_guerres">Entre-deux-guerres (1920–1940)</SelectItem>
+              <SelectItem value="post_guerre">Reconstruction (1945–1965)</SelectItem>
               <SelectItem value="70_80">Années 70–80</SelectItem>
               <SelectItem value="90_2000">Années 90–2000</SelectItem>
-              <SelectItem value="neuf">Neuf / VEFA (2010+)</SelectItem>
+              <SelectItem value="contemporain">Contemporain (2000–2015)</SelectItem>
+              <SelectItem value="neuf">Neuf / BBC / RT2012+ (2015+)</SelectItem>
             </SelectContent>
           </Select>
         </FieldGroup>
@@ -593,22 +666,25 @@ function Step4({ form, update }) {
           <Select value={form.building.building_type} onValueChange={(v) => update("building", "building_type", v)}>
             <SelectTrigger className="rounded-none h-11" data-testid="building-type-select"><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="pierre_taille">Pierre de taille haussmannien</SelectItem>
+              <SelectItem value="pierre_taille_haussmannien">Pierre de taille haussmannien</SelectItem>
+              <SelectItem value="pierre_taille_autre">Pierre de taille (non haussmannien)</SelectItem>
               <SelectItem value="brique">Brique</SelectItem>
-              <SelectItem value="beton">Béton</SelectItem>
-              <SelectItem value="moderne">Immeuble moderne</SelectItem>
-              <SelectItem value="residence">Résidence sécurisée</SelectItem>
-              <SelectItem value="petit_immeuble">Petit immeuble (&lt;6 lots)</SelectItem>
+              <SelectItem value="brique_pierre">Brique et pierre</SelectItem>
+              <SelectItem value="beton_standing">Béton — immeuble de standing</SelectItem>
+              <SelectItem value="beton_simple">Béton — immeuble classique</SelectItem>
+              <SelectItem value="residence_securisee">Résidence sécurisée récente</SelectItem>
+              <SelectItem value="immeuble_neuf">Immeuble neuf / BBC</SelectItem>
+              <SelectItem value="petit_immeuble">Petit immeuble / maison divisée</SelectItem>
             </SelectContent>
           </Select>
         </FieldGroup>
-        <FieldGroup label="Nombre d'étages">
-          <Input type="number" min="1" max="20" value={form.building.total_floors} onChange={(e) => update("building", "total_floors", parseInt(e.target.value) || 1)} className="rounded-none h-11" data-testid="total-floors-input" />
+        <FieldGroup label="Nombre d'étages de l'immeuble">
+          <Input type="number" min="1" max="30" value={form.building.total_floors} onChange={(e) => update("building", "total_floors", parseInt(e.target.value) || 1)} className="rounded-none h-11" data-testid="total-floors-input" />
         </FieldGroup>
-        <FieldGroup label="Nombre de lots">
+        <FieldGroup label="Nombre de lots copropriété">
           <Input type="number" min="1" value={form.building.total_lots} onChange={(e) => update("building", "total_lots", parseInt(e.target.value) || 1)} className="rounded-none h-11" data-testid="total-lots-input" />
         </FieldGroup>
-        <FieldGroup label="Ascenseur" overline="Services">
+        <FieldGroup label="Ascenseur" overline="Équipements">
           <div className="flex items-center gap-3 h-11">
             <Switch checked={form.building.elevator} onCheckedChange={(v) => update("building", "elevator", v)} data-testid="elevator-switch" />
             <span className="text-sm text-zinc-600">{form.building.elevator ? "Oui" : "Non"}</span>
@@ -620,18 +696,31 @@ function Step4({ form, update }) {
             <span className="text-sm text-zinc-600">{form.building.concierge ? "Oui" : "Non"}</span>
           </div>
         </FieldGroup>
-        <FieldGroup label="État des parties communes" overline="État">
-          <Select value={form.building.common_areas_state} onValueChange={(v) => update("building", "common_areas_state", v)}>
-            <SelectTrigger className="rounded-none h-11" data-testid="common-areas-select"><SelectValue /></SelectTrigger>
+        <FieldGroup label="Sécurité">
+          <Select value={form.building.security} onValueChange={(v) => update("building", "security", v)}>
+            <SelectTrigger className="rounded-none h-11"><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="mauvais">Mauvais</SelectItem>
-              <SelectItem value="correct">Correct</SelectItem>
-              <SelectItem value="bon">Bon</SelectItem>
-              <SelectItem value="excellent">Excellent</SelectItem>
+              <SelectItem value="aucune">Aucune</SelectItem>
+              <SelectItem value="digicode">Digicode</SelectItem>
+              <SelectItem value="interphone">Interphone</SelectItem>
+              <SelectItem value="videophone">Visiophone</SelectItem>
+              <SelectItem value="badge">Badge / contrôle d'accès</SelectItem>
+              <SelectItem value="gardien_video">Gardien + vidéosurveillance</SelectItem>
             </SelectContent>
           </Select>
         </FieldGroup>
-        <FieldGroup label="Charges annuelles (€)">
+        <FieldGroup label="État parties communes" overline="État de l'immeuble">
+          <Select value={form.building.common_areas_state} onValueChange={(v) => update("building", "common_areas_state", v)}>
+            <SelectTrigger className="rounded-none h-11" data-testid="common-areas-select"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="mauvais">Mauvais — vétuste</SelectItem>
+              <SelectItem value="correct">Correct — entretenu</SelectItem>
+              <SelectItem value="bon">Bon — bien entretenu</SelectItem>
+              <SelectItem value="excellent">Excellent — rénové récemment</SelectItem>
+            </SelectContent>
+          </Select>
+        </FieldGroup>
+        <FieldGroup label="Charges annuelles copro (€)">
           <Input type="number" min="0" value={form.building.annual_charges} onChange={(e) => update("building", "annual_charges", parseFloat(e.target.value) || 0)} className="rounded-none h-11" data-testid="charges-input" />
         </FieldGroup>
         <FieldGroup label="Syndic">
@@ -644,17 +733,57 @@ function Step4({ form, update }) {
             </SelectContent>
           </Select>
         </FieldGroup>
-        <FieldGroup label="Procédures en cours">
-          <Select value={form.building.ongoing_procedures} onValueChange={(v) => update("building", "ongoing_procedures", v)}>
-            <SelectTrigger className="rounded-none h-11" data-testid="procedures-select"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="aucune">Aucune</SelectItem>
-              <SelectItem value="ravalement">Ravalement voté</SelectItem>
-              <SelectItem value="travaux_lourds">Travaux lourds votés</SelectItem>
-              <SelectItem value="judiciaire">Procédure judiciaire</SelectItem>
-            </SelectContent>
-          </Select>
-        </FieldGroup>
+      </div>
+
+      {/* ── TRAVAUX DE COPROPRIÉTÉ ── */}
+      <div className="mt-10 pt-6 border-t border-zinc-200">
+        <h3 className="font-heading font-semibold text-lg mb-2">Travaux de copropriété</h3>
+        <p className="text-sm text-zinc-500 mb-6">Les travaux votés ou à prévoir impactent directement la valeur du bien et les charges futures.</p>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          <FieldGroup label="Travaux votés en AG" overline="Travaux prévus">
+            <Select value={form.building.ongoing_procedures || "aucune"} onValueChange={(v) => update("building", "ongoing_procedures", v)}>
+              <SelectTrigger className="rounded-none h-11" data-testid="procedures-select"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="aucune">Aucun travaux voté</SelectItem>
+                <SelectItem value="ravalement">Ravalement de façade</SelectItem>
+                <SelectItem value="toiture">Réfection toiture</SelectItem>
+                <SelectItem value="ascenseur">Mise aux normes ascenseur</SelectItem>
+                <SelectItem value="chauffage">Remplacement chaudière collective</SelectItem>
+                <SelectItem value="parties_communes">Rénovation parties communes</SelectItem>
+                <SelectItem value="etancheite">Étanchéité / terrasse</SelectItem>
+                <SelectItem value="travaux_lourds">Travaux lourds (plusieurs postes)</SelectItem>
+                <SelectItem value="judiciaire">Procédure judiciaire en cours</SelectItem>
+              </SelectContent>
+            </Select>
+          </FieldGroup>
+          {form.building.ongoing_procedures && form.building.ongoing_procedures !== "aucune" && (
+            <FieldGroup label="Montant estimé des travaux (votre quote-part €)">
+              <Input type="number" min="0" value={form.building.works_cost || ""} onChange={(e) => update("building", "works_cost", parseFloat(e.target.value) || 0)} placeholder="ex: 8000" className="rounded-none h-11" />
+            </FieldGroup>
+          )}
+          <FieldGroup label="Ravalement prévu dans les 5 ans ?" overline="Risques copro">
+            <Select value={form.building.facade_state || "correct"} onValueChange={(v) => update("building", "facade_state", v)}>
+              <SelectTrigger className="rounded-none h-11"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="recent">Non — ravalement récent (&lt;10 ans)</SelectItem>
+                <SelectItem value="correct">Pas prévu à court terme</SelectItem>
+                <SelectItem value="a_prevoir">Probable dans les 5 ans</SelectItem>
+                <SelectItem value="urgent">Urgent — façade dégradée</SelectItem>
+              </SelectContent>
+            </Select>
+          </FieldGroup>
+          <FieldGroup label="État de la toiture">
+            <Select value={form.building.roof_state || "correct"} onValueChange={(v) => update("building", "roof_state", v)}>
+              <SelectTrigger className="rounded-none h-11"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="recent">Récente (&lt;10 ans)</SelectItem>
+                <SelectItem value="correct">Correcte</SelectItem>
+                <SelectItem value="a_surveiller">À surveiller</SelectItem>
+                <SelectItem value="a_refaire">À refaire</SelectItem>
+              </SelectContent>
+            </Select>
+          </FieldGroup>
+        </div>
       </div>
     </div>
   );
@@ -679,8 +808,8 @@ function Step5({ form, update }) {
 
   return (
     <div data-testid="step-5-form">
-      <h2 className="font-heading font-bold text-2xl sm:text-3xl tracking-tight mb-2">Données juridiques et fiscales</h2>
-      <p className="text-sm text-zinc-500 mb-8">Un bien vendu occupé ou en viager peut avoir une décote significative.</p>
+      <h2 className="font-heading font-bold text-2xl sm:text-3xl tracking-tight mb-2">Juridique et situation</h2>
+      <p className="text-sm text-zinc-500 mb-8">Ces informations permettent d'ajuster l'estimation selon la situation juridique du bien.</p>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         <FieldGroup label="Régime de propriété" overline="Propriété">
           <Select value={form.legal.ownership_type} onValueChange={(v) => update("legal", "ownership_type", v)}>
@@ -698,20 +827,39 @@ function Step5({ form, update }) {
         <FieldGroup label="Taxe foncière annuelle (€)" overline="Fiscalité">
           <Input type="number" min="0" value={form.legal.property_tax} onChange={(e) => update("legal", "property_tax", parseFloat(e.target.value) || 0)} className="rounded-none h-11" data-testid="tax-input" />
         </FieldGroup>
-        <FieldGroup label="Loyer actuel (€/mois)" overline="Location">
-          <Input type="number" min="0" value={form.legal.current_rent} onChange={(e) => update("legal", "current_rent", parseFloat(e.target.value) || 0)} className="rounded-none h-11" data-testid="rent-input" />
+        <FieldGroup label="Bien actuellement loué ?" overline="Occupation">
+          <Select value={form.legal.current_rent > 0 ? "oui" : "non"} onValueChange={(v) => { if (v === "non") { update("legal", "current_rent", 0); update("legal", "remaining_lease_months", 0); } else { update("legal", "current_rent", 1); } }}>
+            <SelectTrigger className="rounded-none h-11"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="non">Non — vendu libre</SelectItem>
+              <SelectItem value="oui">Oui — locataire en place</SelectItem>
+            </SelectContent>
+          </Select>
         </FieldGroup>
-        <FieldGroup label="Mois de bail restants">
-          <Input type="number" min="0" value={form.legal.remaining_lease_months} onChange={(e) => update("legal", "remaining_lease_months", parseInt(e.target.value) || 0)} className="rounded-none h-11" data-testid="lease-input" />
-        </FieldGroup>
+        {form.legal.current_rent > 0 && (
+          <>
+            <FieldGroup label="Loyer mensuel actuel (€)">
+              <Input type="number" min="0" value={form.legal.current_rent} onChange={(e) => update("legal", "current_rent", parseFloat(e.target.value) || 0)} placeholder="ex: 1500" className="rounded-none h-11" data-testid="rent-input" />
+            </FieldGroup>
+            <FieldGroup label="Durée restante du bail (mois)">
+              <Input type="number" min="0" value={form.legal.remaining_lease_months} onChange={(e) => update("legal", "remaining_lease_months", parseInt(e.target.value) || 0)} placeholder="ex: 24" className="rounded-none h-11" data-testid="lease-input" />
+            </FieldGroup>
+          </>
+        )}
+        {form.legal.current_rent > 0 && (
+          <div className="col-span-full bg-blue-50 border border-blue-200 p-4">
+            <p className="text-sm text-blue-800">Un bien vendu avec un locataire en place subit une décote de 10 à 20% selon la durée restante du bail et le type de bail. L'acheteur ne peut pas occuper le bien immédiatement.</p>
+          </div>
+        )}
         <FieldGroup label="Loi Carrez certifiée" overline="Certifications">
           <div className="flex items-center gap-3 h-11">
             <Switch checked={form.legal.carrez_certified} onCheckedChange={(v) => update("legal", "carrez_certified", v)} data-testid="carrez-switch" />
             <span className="text-sm text-zinc-600">{form.legal.carrez_certified ? "Oui" : "Non"}</span>
           </div>
         </FieldGroup>
-        <FieldGroup label="Servitudes connues">
-          <Input value={form.legal.servitudes} onChange={(e) => update("legal", "servitudes", e.target.value)} placeholder="Vue, passage, etc." className="rounded-none h-11" data-testid="servitudes-input" />
+        <FieldGroup label="Servitudes ou contraintes">
+          <Input value={form.legal.servitudes} onChange={(e) => update("legal", "servitudes", e.target.value)} placeholder="Droit de passage, vue protégée, ABF..." className="rounded-none h-11" data-testid="servitudes-input" />
+          <p className="text-xs text-zinc-400 mt-1">Contraintes connues : droit de passage, servitude de vue, périmètre ABF (Architecte des Bâtiments de France), etc.</p>
         </FieldGroup>
       </div>
 
@@ -721,13 +869,12 @@ function Step5({ form, update }) {
         <p className="text-sm text-zinc-500 mb-3">Ces données améliorent considérablement la précision de l'estimation.</p>
         <div className="bg-amber-50 border border-amber-200 p-4 mb-8">
           <p className="text-sm text-amber-800">
-            <strong>Comment remplir en 2 minutes :</strong> Allez sur <a href="https://www.meilleursagents.com" target="_blank" rel="noopener noreferrer" className="underline font-medium">meilleursagents.com</a>, tapez l'adresse de votre bien, et copiez le prix/m² affiché. Pour Castorus, installez l'extension Chrome puis consultez l'annonce du bien.
+            <strong>Comment remplir en 2 minutes :</strong> Allez sur <a href="https://www.meilleursagents.com" target="_blank" rel="noopener noreferrer" className="underline font-medium">meilleursagents.com</a>, tapez l'adresse du bien, et copiez le prix/m² affiché. Pour Castorus, installez l'extension Chrome puis consultez l'annonce.
           </p>
         </div>
 
-        {/* MeilleursAgents */}
         <h3 className="font-heading font-semibold text-lg mb-4 flex items-center gap-2">
-          <span className="w-6 h-6 bg-blue-600 text-white flex items-center justify-center text-xs font-bold">1</span>
+          <span className="w-6 h-6 bg-blue-600 text-white flex items-center justify-center text-xs font-bold rounded">1</span>
           Prix/m² MeilleursAgents de la rue
         </h3>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
@@ -742,13 +889,12 @@ function Step5({ form, update }) {
           </FieldGroup>
         </div>
 
-        {/* Castorus */}
         <h3 className="font-heading font-semibold text-lg mb-4 flex items-center gap-2">
-          <span className="w-6 h-6 bg-orange-500 text-white flex items-center justify-center text-xs font-bold">2</span>
+          <span className="w-6 h-6 bg-orange-500 text-white flex items-center justify-center text-xs font-bold rounded">2</span>
           Données Castorus (si vous avez l'extension)
         </h3>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-10">
-          <FieldGroup label="Jours en vente (DOM)" overline="Castorus">
+          <FieldGroup label="Jours en vente" overline="Castorus">
             <Input type="number" min="0" value={form.market_manual?.castorus_dom || ""} onChange={(e) => update("market_manual", "castorus_dom", parseInt(e.target.value) || 0)} placeholder="ex: 45" className="rounded-none h-11" />
           </FieldGroup>
           <FieldGroup label="Nombre de baisses de prix">
@@ -762,16 +908,15 @@ function Step5({ form, update }) {
           </FieldGroup>
         </div>
 
-        {/* Annonces similaires */}
         <h3 className="font-heading font-semibold text-lg mb-4 flex items-center gap-2">
-          <span className="w-6 h-6 bg-green-600 text-white flex items-center justify-center text-xs font-bold">3</span>
+          <span className="w-6 h-6 bg-green-600 text-white flex items-center justify-center text-xs font-bold rounded">3</span>
           Annonces similaires dans le quartier
         </h3>
         <p className="text-sm text-zinc-500 mb-4">Ajoutez 2-3 annonces de biens similaires trouvées sur SeLoger, LeBonCoin ou BienIci.</p>
 
         {(form.market_manual?.similar_listings || []).map((listing, idx) => (
           <div key={idx} className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4 p-4 bg-zinc-50 border border-zinc-200">
-            <FieldGroup label={`Prix (€)`}>
+            <FieldGroup label="Prix (€)">
               <Input type="number" min="0" value={listing.price || ""} onChange={(e) => updateListing(idx, "price", parseFloat(e.target.value) || 0)} placeholder="ex: 480000" className="rounded-none h-11" />
             </FieldGroup>
             <FieldGroup label="Surface (m²)">
@@ -797,3 +942,4 @@ function Step5({ form, update }) {
     </div>
   );
 }
+
