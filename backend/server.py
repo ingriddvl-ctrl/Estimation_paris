@@ -1753,45 +1753,26 @@ async def calculate_simulation(req: SimulationRequest):
         ]
     }
 
-# ─── Object Storage for Documents ───
+# ─── File Storage for Documents (MongoDB-based) ───
 
-STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
-EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY")
 APP_NAME = "valorisateur-paris"
-storage_key = None
-
-def init_storage():
-    global storage_key
-    if storage_key:
-        return storage_key
-    resp = requests.post(f"{STORAGE_URL}/init", json={"emergent_key": EMERGENT_KEY}, timeout=30)
-    resp.raise_for_status()
-    storage_key = resp.json()["storage_key"]
-    return storage_key
+import base64 as base64_mod
 
 def put_object(path: str, data: bytes, content_type: str) -> dict:
-    key = init_storage()
-    resp = requests.put(
-        f"{STORAGE_URL}/objects/{path}",
-        headers={"X-Storage-Key": key, "Content-Type": content_type},
-        data=data, timeout=120
-    )
-    resp.raise_for_status()
-    return resp.json()
+    """Store file — returns metadata. Actual data stored as base64 in the doc record."""
+    return {"path": path, "size": len(data), "content_type": content_type}
 
-def get_object(path: str):
-    key = init_storage()
-    resp = requests.get(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key}, timeout=60)
-    resp.raise_for_status()
-    return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
+def get_object_from_record(record: dict):
+    """Get file data from a MongoDB document record"""
+    data_b64 = record.get("data_b64", "")
+    if data_b64:
+        data = base64_mod.b64decode(data_b64)
+        return data, record.get("content_type", "application/octet-stream")
+    raise FileNotFoundError("No file data in record")
 
 @app.on_event("startup")
 async def startup():
-    try:
-        init_storage()
-        logger.info("Object storage initialized")
-    except Exception as e:
-        logger.warning(f"Storage init failed (non-blocking): {e}")
+    logger.info("MongoDB storage ready")
 
 ALLOWED_DOC_TYPES = {
     "pdf": "application/pdf", "jpg": "image/jpeg", "jpeg": "image/jpeg",
@@ -1828,8 +1809,8 @@ async def upload_document(
     storage_path = f"{APP_NAME}/docs/{valuation_id or 'general'}/{file_id}.{ext}"
     data = await file.read()
     
-    if len(data) > 20 * 1024 * 1024:  # 20MB max
-        raise HTTPException(status_code=400, detail="Fichier trop volumineux (max 20Mo)")
+    if len(data) > 10 * 1024 * 1024:  # 10MB max (MongoDB 16MB limit minus overhead)
+        raise HTTPException(status_code=400, detail="Fichier trop volumineux (max 10Mo)")
     
     result = put_object(storage_path, data, file.content_type or ALLOWED_DOC_TYPES.get(ext, "application/octet-stream"))
     
@@ -1838,21 +1819,23 @@ async def upload_document(
         "valuation_id": valuation_id,
         "storage_path": result["path"],
         "original_filename": file.filename,
-        "content_type": file.content_type,
-        "size": result.get("size", len(data)),
+        "content_type": file.content_type or ALLOWED_DOC_TYPES.get(ext, "application/octet-stream"),
+        "size": len(data),
         "category": category,
         "category_label": DOC_CATEGORIES.get(category, "Autre"),
         "is_deleted": False,
         "created_at": datetime.now(timezone.utc).isoformat(),
+        "data_b64": base64_mod.b64encode(data).decode("utf-8"),
     }
     await db.documents.insert_one(doc_record)
     doc_record.pop("_id", None)
+    doc_record.pop("data_b64", None)  # Don't send base64 data back to client
     return doc_record
 
 @api_router.get("/documents/{valuation_id}")
 async def list_documents(valuation_id: str):
     docs = await db.documents.find(
-        {"valuation_id": valuation_id, "is_deleted": False}, {"_id": 0}
+        {"valuation_id": valuation_id, "is_deleted": False}, {"_id": 0, "data_b64": 0}
     ).sort("created_at", -1).to_list(50)
     return docs
 
@@ -1861,7 +1844,10 @@ async def download_document(file_id: str):
     record = await db.documents.find_one({"id": file_id, "is_deleted": False})
     if not record:
         raise HTTPException(status_code=404, detail="Document not found")
-    data, content_type = get_object(record["storage_path"])
+    try:
+        data, content_type = get_object_from_record(record)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="File data not found")
     return Response(content=data, media_type=record.get("content_type", content_type),
                     headers={"Content-Disposition": f'inline; filename="{record.get("original_filename", "document")}"'})
 
@@ -1884,7 +1870,7 @@ async def analyze_document(file_id: str):
         raise HTTPException(status_code=404, detail="Document not found")
 
     try:
-        data, _ = get_object(record["storage_path"])
+        data, _ = get_object_from_record(record)
     except Exception:
         raise HTTPException(status_code=500, detail="Cannot read file")
 
