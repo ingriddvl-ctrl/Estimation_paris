@@ -946,9 +946,106 @@ async def estimate_valuation(req: ValuationRequest):
             if market_trend_adj < -0.5:
                 market_trend_detail = f"Correction tendance : {market_trend_adj}% (comparables datant de {avg_age:.0f} mois en moyenne, marché en baisse de ~3%/an depuis 2024)"
 
-    reliability = circle_stats.get("reliability", "BASSE")
-    confidence = min(95, 25 + len(comparables) * 2 + (15 if search_radius <= 300 else 5)
-                     + (10 if reliability == "HAUTE" else (5 if reliability == "MOYENNE" else 0)))
+    # ── SCORE DE CONFIANCE DÉTAILLÉ ──
+    c1 = circle_stats.get("circle_1_count", 0)
+    c2 = circle_stats.get("circle_2_count", 0)
+    c3 = circle_stats.get("circle_3_count", 0)
+    total_comps = len(comparables)
+
+    # Composante 1: Volume de données (0-30 pts)
+    if total_comps >= 20:
+        conf_volume = 30
+    elif total_comps >= 15:
+        conf_volume = 25
+    elif total_comps >= 10:
+        conf_volume = 20
+    elif total_comps >= 5:
+        conf_volume = 12
+    else:
+        conf_volume = max(0, total_comps * 2)
+
+    # Composante 2: Proximité géographique (0-25 pts)
+    if search_radius <= 200:
+        conf_proximity = 25
+    elif search_radius <= 300:
+        conf_proximity = 18
+    elif search_radius <= 500:
+        conf_proximity = 10
+    else:
+        conf_proximity = 5
+
+    # Composante 3: Homogénéité des prix (0-20 pts)
+    conf_homogeneity = 10
+    if comparables:
+        prices_sqm = [c.get("price_per_sqm", 0) for c in comparables if c.get("price_per_sqm")]
+        if len(prices_sqm) >= 3:
+            mean_p = sum(prices_sqm) / len(prices_sqm)
+            std_p = (sum((p - mean_p)**2 for p in prices_sqm) / len(prices_sqm)) ** 0.5
+            cv = std_p / mean_p if mean_p > 0 else 1
+            # CV < 0.10 = très homogène, CV > 0.30 = très dispersé
+            if cv < 0.10:
+                conf_homogeneity = 20
+            elif cv < 0.15:
+                conf_homogeneity = 16
+            elif cv < 0.20:
+                conf_homogeneity = 12
+            elif cv < 0.30:
+                conf_homogeneity = 8
+            else:
+                conf_homogeneity = 4
+
+    # Composante 4: Fraîcheur des données (0-15 pts)
+    conf_freshness = 8
+    if comparables:
+        recent_count = 0
+        for c in comparables:
+            try:
+                date_str = str(c.get("date", ""))
+                if date_str.startswith("2025") or date_str.startswith("2026"):
+                    recent_count += 1
+            except:
+                pass
+        freshness_ratio = recent_count / total_comps if total_comps > 0 else 0
+        if freshness_ratio >= 0.5:
+            conf_freshness = 15
+        elif freshness_ratio >= 0.3:
+            conf_freshness = 12
+        elif freshness_ratio >= 0.1:
+            conf_freshness = 8
+        else:
+            conf_freshness = 4
+
+    # Composante 5: Données de même rue (0-10 pts)
+    if c1 >= 5:
+        conf_same_street = 10
+    elif c1 >= 3:
+        conf_same_street = 8
+    elif c1 >= 1:
+        conf_same_street = 5
+    else:
+        conf_same_street = 0
+
+    confidence = min(95, conf_volume + conf_proximity + conf_homogeneity + conf_freshness + conf_same_street)
+
+    # Fiabilité globale basée sur le score
+    if confidence >= 75:
+        reliability = "HAUTE"
+    elif confidence >= 50:
+        reliability = "MOYENNE"
+    else:
+        reliability = "BASSE"
+
+    confidence_detail = {
+        "score": confidence,
+        "reliability": reliability,
+        "components": {
+            "volume": {"score": conf_volume, "max": 30, "label": "Volume de données", "detail": f"{total_comps} comparables trouvés"},
+            "proximity": {"score": conf_proximity, "max": 25, "label": "Proximité géographique", "detail": f"Rayon de recherche : {search_radius}m"},
+            "homogeneity": {"score": conf_homogeneity, "max": 20, "label": "Homogénéité des prix", "detail": f"Dispersion des prix/m² des comparables"},
+            "freshness": {"score": conf_freshness, "max": 15, "label": "Fraîcheur des données", "detail": f"{recent_count if comparables else 0} transactions de 2025-2026"},
+            "same_street": {"score": conf_same_street, "max": 10, "label": "Transactions même rue", "detail": f"{c1} transaction(s) dans la même rue"},
+        },
+    }
 
     # 2. Apply adjustments
     adjustments = []
@@ -1410,6 +1507,8 @@ async def estimate_valuation(req: ValuationRequest):
         }
     )
     resp = result.model_dump()
+    # Add detailed confidence breakdown
+    resp["confidence_detail"] = confidence_detail
     # Add excluded comparables for transparency
     resp["excluded_comparables"] = [_clean_comp(c) for c in excluded_comparables[:20]]
     # Circle stats and street coefficient
