@@ -1,226 +1,75 @@
-import { useState, useEffect, useRef } from "react";
-import { api } from "@/lib/api";
-import { Button } from "@/components/ui/button";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { toast } from "sonner";
-import { Upload, FileText, Image, Trash2, Download, Loader2, FolderOpen, Search, AlertTriangle, AlertCircle, Info } from "lucide-react";
+import axios from "axios";
 
-const CATEGORIES = [
-  { value: "pv_ag", label: "PV d'Assemblée Générale" },
-  { value: "releve_charges", label: "Relevé de charges" },
-  { value: "dpe", label: "DPE" },
-  { value: "diagnostic", label: "Diagnostic technique" },
-  { value: "reglement_copro", label: "Règlement de copropriété" },
-  { value: "plan", label: "Plan du bien" },
-  { value: "photo", label: "Photo" },
-  { value: "compromis", label: "Compromis de vente" },
-  { value: "autre", label: "Autre document" },
-];
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+const API = `${BACKEND_URL}/api`;
 
-function formatSize(bytes) {
-  if (bytes < 1024) return `${bytes} o`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} Ko`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} Mo`;
-}
-
-const FILE_ICONS = {
-  "application/pdf": FileText,
-  "image/jpeg": Image,
-  "image/png": Image,
-};
-
-export default function DocumentUpload({ valuationId }) {
-  const [docs, setDocs] = useState([]);
-  const [uploading, setUploading] = useState(false);
-  const [analyzing, setAnalyzing] = useState(null);
-  const [category, setCategory] = useState("autre");
-  const [loading, setLoading] = useState(true);
-  const fileRef = useRef(null);
-
-  useEffect(() => {
-    if (valuationId) {
-      api.listDocuments(valuationId).then(setDocs).catch(() => {}).finally(() => setLoading(false));
-    } else {
-      setLoading(false);
-    }
-  }, [valuationId]);
-
-  const handleUpload = async (e) => {
-    const files = e.target.files;
-    if (!files?.length) return;
-    setUploading(true);
-    try {
-      for (const file of files) {
-        const result = await api.uploadDocument(file, valuationId, category);
-        setDocs(prev => [result, ...prev]);
-      }
-      toast.success(`${files.length} document(s) ajouté(s)`);
-    } catch (err) {
-      const msg = err?.response?.data?.detail || "Erreur d'upload";
-      toast.error(msg);
-    } finally {
-      setUploading(false);
-      if (fileRef.current) fileRef.current.value = "";
-    }
-  };
-
-  const handleAnalyze = async (doc) => {
-    setAnalyzing(doc.id);
-    try {
-      const result = await api.analyzeDocument(doc.id);
-      setDocs(prev => prev.map(d => d.id === doc.id ? { ...d, analysis: result } : d));
-      const items = result.detected_items?.length || 0;
-      if (items > 0) {
-        toast.success(`${items} élément(s) détecté(s) dans le document !`);
-      } else {
-        toast.info("Aucun risque détecté dans ce document.");
-      }
-    } catch {
-      toast.error("Erreur d'analyse du document");
-    } finally {
-      setAnalyzing(null);
-    }
-  };
-
-  const handleDownload = async (doc) => {
-    try {
-      const resp = await api.downloadDocument(doc.id);
-      const url = URL.createObjectURL(resp.data);
+export const api = {
+  searchAddress: (q) => axios.get(`${API}/address/search`, { params: { q } }).then(r => r.data),
+  searchDVF: (lat, lon, radius = 500) => axios.get(`${API}/dvf/search`, { params: { lat, lon, radius } }).then(r => r.data),
+  getGeoRisks: (lat, lon) => axios.get(`${API}/geo/risks`, { params: { lat, lon } }).then(r => r.data),
+  estimateValuation: (data) => axios.post(`${API}/valuation/estimate`, data).then(r => r.data),
+  saveValuation: (data) => axios.post(`${API}/valuation/save`, data).then(r => r.data),
+  getValuation: (id) => axios.get(`${API}/valuation/${id}`).then(r => r.data),
+  listValuations: () => axios.get(`${API}/valuations`).then(r => r.data),
+  deleteValuation: (id) => axios.delete(`${API}/valuation/${id}`).then(r => r.data),
+  getSharedValuation: (shareId) => axios.get(`${API}/share/${shareId}`).then(r => r.data),
+  getAlgorithmConfig: () => axios.get(`${API}/algorithm/config`).then(r => r.data),
+  updateAlgorithmConfig: (data) => axios.put(`${API}/algorithm/config`, data).then(r => r.data),
+  calculateSimulation: (data) => axios.post(`${API}/simulation/calculate`, data).then(r => r.data),
+  uploadDocument: (file, valuationId, category) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    return axios.post(`${API}/documents/upload?valuation_id=${valuationId || ""}&category=${category || "autre"}`, formData, {
+      headers: { "Content-Type": "multipart/form-data" }
+    }).then(r => r.data);
+  },
+  listDocuments: (valuationId) => axios.get(`${API}/documents/${valuationId}`).then(r => r.data),
+  downloadDocument: (fileId) => axios.get(`${API}/documents/download/${fileId}`, { responseType: "blob" }).then(r => r),
+  deleteDocument: (fileId) => axios.delete(`${API}/documents/${fileId}`).then(r => r.data),
+  analyzeDocument: (fileId) => axios.post(`${API}/documents/analyze/${fileId}`).then(r => r.data),
+  getMarketListings: (lat, lon, radius = 800) => axios.get(`${API}/market/listings`, { params: { lat, lon, radius } }).then(r => r.data),
+  analyzeListing: (file) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    return axios.post(`${API}/listing/analyze`, formData, {
+      headers: { "Content-Type": "multipart/form-data" },
+      timeout: 120000,
+    }).then(r => r.data);
+  },
+  recalculateValuation: (valuationId, excludedIds) => {
+    return axios.post(`${API}/valuation/recalculate`, {
+      valuation_id: valuationId,
+      excluded_comparable_ids: excludedIds,
+    }).then(r => r.data);
+  },
+  downloadPdfReport: (valuationId) => {
+    return axios.get(`${API}/report/pdf/${valuationId}`, { responseType: "blob" }).then(r => {
+      const url = window.URL.createObjectURL(new Blob([r.data], { type: "application/pdf" }));
+      const disposition = r.headers["content-disposition"] || "";
+      const match = disposition.match(/filename="?([^"]+)"?/);
+      const filename = match ? match[1] : `Estimation_${valuationId}.pdf`;
       const a = document.createElement("a");
       a.href = url;
-      a.download = doc.original_filename;
+      a.download = filename;
+      document.body.appendChild(a);
       a.click();
-      URL.revokeObjectURL(url);
-    } catch {
-      toast.error("Erreur de téléchargement");
-    }
-  };
-
-  const handleDelete = async (docId) => {
-    try {
-      await api.deleteDocument(docId);
-      setDocs(prev => prev.filter(d => d.id !== docId));
-      toast.success("Document supprimé");
-    } catch {
-      toast.error("Erreur de suppression");
-    }
-  };
-
-  return (
-    <div data-testid="document-upload-panel">
-      <p className="text-xs uppercase tracking-[0.2em] text-zinc-400 font-mono mb-4">Documents du bien</p>
-      <p className="text-sm text-zinc-500 mb-6">
-        Ajoutez vos documents : PV d'AG, relevés de charges, DPE, diagnostics, plans, photos.
-        Ces pièces complètent votre dossier de valorisation.
-      </p>
-
-      {/* Upload zone */}
-      <div className="border border-dashed border-zinc-300 p-6 mb-6 hover:border-zinc-400 transition-colors" data-testid="upload-zone">
-        <div className="flex flex-col sm:flex-row items-center gap-4">
-          <div className="flex-1 flex items-center gap-4">
-            <Select value={category} onValueChange={setCategory}>
-              <SelectTrigger className="rounded-none h-10 w-56" data-testid="doc-category-select">
-                <SelectValue placeholder="Catégorie" />
-              </SelectTrigger>
-              <SelectContent>
-                {CATEGORIES.map(c => (
-                  <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <input
-              ref={fileRef}
-              type="file"
-              multiple
-              accept=".pdf,.jpg,.jpeg,.png,.doc,.docx,.xls,.xlsx,.txt,.csv"
-              className="hidden"
-              onChange={handleUpload}
-              data-testid="file-input"
-            />
-            <Button
-              onClick={() => fileRef.current?.click()}
-              disabled={uploading}
-              variant="outline"
-              className="rounded-none h-10"
-              data-testid="upload-btn"
-            >
-              {uploading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Upload className="w-4 h-4 mr-2" />}
-              {uploading ? "Upload..." : "Choisir des fichiers"}
-            </Button>
-          </div>
-          <p className="text-xs text-zinc-400">PDF, images, Excel — max 20 Mo</p>
-        </div>
-      </div>
-
-      {/* Document list */}
-      {loading ? (
-        <div className="flex justify-center py-8"><Loader2 className="w-5 h-5 animate-spin text-zinc-300" /></div>
-      ) : docs.length === 0 ? (
-        <div className="border border-zinc-200 p-8 text-center" data-testid="no-documents">
-          <FolderOpen className="w-6 h-6 text-zinc-300 mx-auto mb-3" />
-          <p className="text-sm text-zinc-400">Aucun document ajouté</p>
-        </div>
-      ) : (
-        <div className="space-y-px bg-zinc-200" data-testid="documents-list">
-          {docs.map((doc, i) => {
-            const Icon = FILE_ICONS[doc.content_type] || FileText;
-            return (
-              <div key={doc.id} className="bg-white px-5 py-3" data-testid={`doc-item-${i}`}>
-                <div className="flex items-center justify-between hover:bg-zinc-50 transition-colors">
-                  <div className="flex items-center gap-3 min-w-0 flex-1">
-                    <Icon className="w-4 h-4 text-zinc-400 shrink-0" />
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium truncate">{doc.original_filename}</p>
-                      <div className="flex items-center gap-2 text-xs text-zinc-400">
-                        <span className="px-1.5 py-0.5 bg-zinc-100 font-mono">{doc.category_label || doc.category}</span>
-                        <span>{formatSize(doc.size)}</span>
-                        <span>{new Date(doc.created_at).toLocaleDateString("fr-FR")}</span>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-1 shrink-0 ml-2">
-                    {(doc.category === "pv_ag" || doc.category === "releve_charges" || doc.category === "diagnostic") && !doc.analysis && (
-                      <Button variant="outline" size="sm" onClick={() => handleAnalyze(doc)} disabled={analyzing === doc.id} className="rounded-none h-8 text-xs px-2">
-                        {analyzing === doc.id ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <Search className="w-3 h-3 mr-1" />}
-                        Analyser
-                      </Button>
-                    )}
-                    <Button variant="ghost" size="sm" onClick={() => handleDownload(doc)} className="rounded-none h-8 w-8 p-0" data-testid={`doc-download-${i}`}>
-                      <Download className="w-3.5 h-3.5" />
-                    </Button>
-                    <Button variant="ghost" size="sm" onClick={() => handleDelete(doc.id)} className="rounded-none h-8 w-8 p-0 text-red-500 hover:text-red-700 hover:bg-red-50" data-testid={`doc-delete-${i}`}>
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </Button>
-                  </div>
-                </div>
-                {/* Analysis results */}
-                {doc.analysis?.detected_items?.length > 0 && (
-                  <div className="mt-3 ml-7 space-y-2">
-                    {doc.analysis.detected_items.map((item, j) => {
-                      const ItemIcon = item.level === "critical" ? AlertCircle : item.level === "warning" ? AlertTriangle : Info;
-                      const colors = item.level === "critical" ? "bg-red-50 border-red-200 text-red-800" : item.level === "warning" ? "bg-amber-50 border-amber-200 text-amber-800" : "bg-blue-50 border-blue-200 text-blue-800";
-                      return (
-                        <div key={j} className={`p-3 border text-xs ${colors}`}>
-                          <div className="flex items-center gap-2 font-medium mb-1">
-                            <ItemIcon className="w-3.5 h-3.5" />
-                            {item.label}
-                          </div>
-                          <p className="opacity-80">{item.detail}</p>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-                {doc.analysis && doc.analysis.detected_items?.length === 0 && (
-                  <div className="mt-3 ml-7 p-3 bg-green-50 border border-green-200 text-xs text-green-800">
-                    Aucun risque détecté dans ce document.
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    });
+  },
+  downloadListingPdf: (analysisId) => {
+    return axios.get(`${API}/listing/report/pdf/${analysisId}`, { responseType: "blob" }).then(r => {
+      const url = window.URL.createObjectURL(new Blob([r.data], { type: "application/pdf" }));
+      const disposition = r.headers["content-disposition"] || "";
+      const match = disposition.match(/filename="?([^"]+)"?/);
+      const filename = match ? match[1] : `Analyse_${analysisId}.pdf`;
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    });
+  },
+};
