@@ -74,10 +74,10 @@ export default function Results() {
       <header className="border-b border-zinc-200 sticky top-0 bg-white/80 backdrop-blur-xl z-50">
         <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
           <Link to="/" className="flex items-center gap-3" data-testid="results-nav-home">
-            <div className="w-8 h-8 bg-gradient-to-br from-slate-800 to-slate-600 rounded-lg flex items-center justify-center">
+            <div className="w-8 h-8 bg-blue-600 rounded-xl flex items-center justify-center shadow-sm shadow-blue-600/20">
               <span className="text-white font-bold text-sm">V</span>
             </div>
-            <span className="font-bold text-lg tracking-tight text-slate-800">Valorisateur</span><span className="font-medium text-lg text-teal-600 ml-1">Ingrid</span>
+            <span className="font-extrabold text-lg tracking-tight text-zinc-900">Ingrid</span><span className="font-bold text-lg text-blue-600 ml-1">Immo</span>
           </Link>
           <div className="flex items-center gap-3">
             <Button variant="outline" size="sm" onClick={handleDownloadPdf} disabled={pdfLoading} className="rounded-none text-xs" data-testid="download-pdf-btn">
@@ -153,9 +153,6 @@ export default function Results() {
             <TabsTrigger value="marche" className="rounded-none text-xs data-[state=active]:bg-black data-[state=active]:text-white h-10 px-4" data-testid="tab-marche">
               <ShoppingBag className="w-3.5 h-3.5 mr-1.5" /> Marché
             </TabsTrigger>
-            <TabsTrigger value="marche-actif" className="rounded-none text-xs data-[state=active]:bg-black data-[state=active]:text-white h-10 px-4" data-testid="tab-marche-actif">
-              <Activity className="w-3.5 h-3.5 mr-1.5" /> Annonces
-            </TabsTrigger>
             <TabsTrigger value="expert" className="rounded-none text-xs data-[state=active]:bg-black data-[state=active]:text-white h-10 px-4" data-testid="tab-expert">
               <Brain className="w-3.5 h-3.5 mr-1.5" /> Expert
             </TabsTrigger>
@@ -166,7 +163,7 @@ export default function Results() {
               <MapPin className="w-3.5 h-3.5 mr-1.5" /> Comparables
             </TabsTrigger>
             <TabsTrigger value="risques" className="rounded-none text-xs data-[state=active]:bg-black data-[state=active]:text-white h-10 px-4" data-testid="tab-risques">
-              <Shield className="w-3.5 h-3.5 mr-1.5" /> Risques
+              <Shield className="w-3.5 h-3.5 mr-1.5" /> Risques & Projections
             </TabsTrigger>
             <TabsTrigger value="documents" className="rounded-none text-xs data-[state=active]:bg-black data-[state=active]:text-white h-10 px-4" data-testid="tab-documents">
               <FileText className="w-3.5 h-3.5 mr-1.5" /> Documents
@@ -182,10 +179,6 @@ export default function Results() {
             <div className="mt-8">
               <MarketListings lat={loc.latitude} lon={loc.longitude} estimatedPriceSqm={data.price_per_sqm_median} />
             </div>
-          </TabsContent>
-
-          <TabsContent value="marche-actif" className="mt-6" data-testid="tab-content-marche-actif">
-            <ActiveMarketPanel activeMarket={data.active_market} marketData={data.market_data} />
           </TabsContent>
 
           <TabsContent value="expert" className="mt-6" data-testid="tab-content-expert">
@@ -211,7 +204,14 @@ export default function Results() {
           </TabsContent>
 
           <TabsContent value="risques" className="mt-6" data-testid="tab-content-risques">
-            <RiskPanel risks={data.risks || []} dpe={data.request?.condition?.dpe} />
+            <RiskPanel
+              risks={data.risks || []}
+              dpe={data.request?.condition?.dpe}
+              currentPrice={data.price_median}
+              surface={chars.surface_carrez}
+              charges={data.request?.building?.annual_charges}
+              taxeFonciere={data.request?.legal?.property_tax}
+            />
           </TabsContent>
 
           <TabsContent value="documents" className="mt-6" data-testid="tab-content-documents">
