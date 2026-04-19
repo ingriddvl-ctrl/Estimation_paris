@@ -1245,37 +1245,142 @@ async def estimate_valuation(req: ValuationRequest):
                 adjustments.append({"name": "État général", "value": val, "type": "pct", "detail": label, "hypothesis": hyp})
                 total_pct_adjustment += val
 
-    # Building type
-    if bldg.building_type == "pierre_taille":
-        adj = config.haussmann_bonus
-        hyp = f"Un immeuble haussmannien en pierre de taille apporte +{adj}% vs un immeuble béton des années 60-70. La qualité architecturale (façade sculptée, moulures, parquet, cheminées), la solidité de construction et le prestige de ces immeubles créent une prime durable. Les immeubles haussmanniens représentent environ 60% du parc du centre de Paris et restent les plus recherchés."
-        adjustments.append({"name": "Immeuble haussmannien", "value": adj, "type": "pct", "detail": "Pierre de taille : surcote", "hypothesis": hyp})
-        total_pct_adjustment += adj
+    # Building type — BEAUCOUP plus granulaire
+    building_type = bldg.building_type
+    building_adj = 0
+    building_hyp = ""
+    if building_type in ("pierre_taille_haussmannien", "pierre_taille"):
+        building_adj = config.haussmann_bonus  # +4%
+        building_hyp = f"Un immeuble haussmannien en pierre de taille apporte +{building_adj}% vs un immeuble béton des années 60-70. La qualité architecturale (façade sculptée, moulures, parquet, cheminées) et le prestige créent une prime durable."
+    elif building_type == "pierre_taille_autre":
+        building_adj = config.haussmann_bonus * 0.6  # +2.4%
+        building_hyp = f"Un immeuble en pierre de taille (non haussmannien) apporte +{building_adj:.1f}%. La qualité de construction est supérieure au béton mais le prestige est moindre qu'un haussmannien classique."
+    elif building_type in ("brique", "brique_pierre"):
+        building_adj = 1.5
+        building_hyp = f"Un immeuble en brique apporte +{building_adj}%. C'est un matériau noble avec un charme architectural reconnu, souvent associé aux quartiers résidentiels de qualité."
+    elif building_type == "beton_standing":
+        building_adj = 1.0
+        building_hyp = f"Un immeuble béton de standing apporte +{building_adj}%. Bien que la construction soit en béton, les prestations (hall, ascenseur, parties communes soignées) compensent."
+    elif building_type in ("beton_simple", "beton"):
+        building_adj = 0
+        building_hyp = "Immeuble béton classique — c'est la référence. Pas de surcote ni décote liée au type de construction."
+    elif building_type == "residence_securisee":
+        building_adj = 2.0
+        building_hyp = f"Une résidence sécurisée récente apporte +{building_adj}%. Le contrôle d'accès, le gardien, les espaces verts et le parking souterrain sont des atouts recherchés, surtout par les familles."
+    elif building_type == "immeuble_neuf":
+        building_adj = 3.0
+        building_hyp = f"Un immeuble neuf/BBC apporte +{building_adj}%. Normes thermiques RT2012/RE2020, garantie décennale, charges réduites, et pas de travaux à prévoir."
+    elif building_type == "petit_immeuble":
+        building_adj = -1.0
+        building_hyp = f"Un petit immeuble ou maison divisée peut subir une décote de {abs(building_adj)}%. Le marché de la revente est plus étroit et la copropriété peut être complexe avec peu de lots."
+
+    if building_adj != 0:
+        adjustments.append({"name": "Type d'immeuble", "value": round(building_adj, 1), "type": "pct", "detail": f"{building_type.replace('_', ' ').capitalize()} : {'surcote' if building_adj > 0 else 'décote'}", "hypothesis": building_hyp})
+        total_pct_adjustment += building_adj
+
+    # Standing coefficient — HLM vs standing
+    # Si l'utilisateur indique un bel immeuble mais les comparables incluent des HLM,
+    # on applique un bonus de standing pour compenser
+    is_standing = building_type in ("pierre_taille_haussmannien", "pierre_taille", "pierre_taille_autre", "residence_securisee", "immeuble_neuf", "beton_standing")
+    construction_year = bldg.construction_year if hasattr(bldg, 'construction_year') else None
+    if not construction_year:
+        construction_year = bldg.__dict__.get("construction_year") if hasattr(bldg, '__dict__') else None
+
+    # Si immeuble de standing et que les comparables ont une forte dispersion,
+    # c'est un signe que des HLM sont mélangés → appliquer un bonus
+    if is_standing and comparables:
+        prices_sqm = [c["price_per_sqm"] for c in comparables if c.get("price_per_sqm")]
+        if len(prices_sqm) >= 5:
+            sorted_p = sorted(prices_sqm)
+            q1 = sorted_p[len(sorted_p) // 4]
+            q3 = sorted_p[3 * len(sorted_p) // 4]
+            iqr = q3 - q1
+            mean_p = sum(prices_sqm) / len(prices_sqm)
+            cv = ((sum((p - mean_p)**2 for p in prices_sqm) / len(prices_sqm)) ** 0.5) / mean_p if mean_p > 0 else 0
+            # Si CV > 0.20 (forte dispersion) et immeuble de standing → bonus
+            if cv > 0.20:
+                standing_adj = round(min(5.0, cv * 10), 1)
+                hyp = f"Les comparables DVF autour de cette adresse présentent une forte dispersion des prix ({round(cv*100)}% de coefficient de variation). Cela suggère un mélange de types d'immeubles (standing vs social). Votre immeuble étant de standing, un ajustement de +{standing_adj}% est appliqué pour refléter cette différence."
+                adjustments.append({"name": "Ajustement standing", "value": standing_adj, "type": "pct", "detail": f"Correction hétérogénéité des comparables (CV={round(cv*100)}%)", "hypothesis": hyp})
+                total_pct_adjustment += standing_adj
 
     if bldg.concierge:
         adj = config.concierge_bonus
-        hyp = f"La présence d'un gardien/concierge apporte +{adj}%. Il assure la réception des colis, la propreté des parties communes, la surveillance, et le lien social dans l'immeuble. C'est un service de plus en plus rare et apprécié, surtout dans les copropriétés de standing."
+        hyp = f"La présence d'un gardien/concierge apporte +{adj}%. Il assure la réception des colis, la propreté des parties communes, la surveillance, et le lien social dans l'immeuble."
         adjustments.append({"name": "Gardien", "value": adj, "type": "pct", "detail": "Gardien/concierge : surcote", "hypothesis": hyp})
         total_pct_adjustment += adj
 
     if bldg.total_lots < 10:
         adj = config.small_building_bonus
-        hyp = f"Un petit immeuble de {bldg.total_lots} lots apporte +{adj}%. Les charges de copropriété sont généralement plus faibles, les décisions en AG plus rapides, et l'ambiance plus conviviale. Les gros ensembles (>50 lots) subissent l'effet inverse (lourdeur de gestion, conflits plus fréquents)."
+        hyp = f"Un petit immeuble de {bldg.total_lots} lots apporte +{adj}%. Charges plus faibles, décisions en AG plus rapides, ambiance plus conviviale."
         adjustments.append({"name": "Petit immeuble", "value": adj, "type": "pct", "detail": f"< 10 lots ({bldg.total_lots}) : surcote", "hypothesis": hyp})
         total_pct_adjustment += adj
+    elif bldg.total_lots > 100:
+        adj = -1.5
+        hyp = f"Un grand ensemble de {bldg.total_lots} lots subit une décote de {abs(adj)}%. Lourdeur de gestion, travaux votés plus difficiles, copropriété complexe, moins de convivialité."
+        adjustments.append({"name": "Grand ensemble", "value": adj, "type": "pct", "detail": f"> 100 lots ({bldg.total_lots}) : décote", "hypothesis": hyp})
+        total_pct_adjustment += adj
 
-    # Parking
+    # Charges élevées = signal négatif
+    if bldg.annual_charges and chars.surface_carrez:
+        charges_per_sqm = bldg.annual_charges / chars.surface_carrez
+        if charges_per_sqm > 60:
+            charges_adj = -2.0
+            hyp = f"Les charges de copropriété sont élevées ({round(charges_per_sqm)}€/m²/an, soit {int(bldg.annual_charges):,}€/an). Des charges > 60€/m²/an signalent souvent un chauffage collectif coûteux, un immeuble mal isolé ou des équipements lourds (piscine, gardien 24h). Cela impacte la capacité d'emprunt de l'acheteur et donc le prix."
+            adjustments.append({"name": "Charges élevées", "value": charges_adj, "type": "pct", "detail": f"Charges {round(charges_per_sqm)}€/m²/an", "hypothesis": hyp})
+            total_pct_adjustment += charges_adj
+        elif charges_per_sqm > 45:
+            charges_adj = -1.0
+            adjustments.append({"name": "Charges modérément élevées", "value": charges_adj, "type": "pct", "detail": f"Charges {round(charges_per_sqm)}€/m²/an", "hypothesis": f"Charges légèrement au-dessus de la moyenne ({round(charges_per_sqm)}€/m²/an). Décote mineure de {abs(charges_adj)}%."})
+            total_pct_adjustment += charges_adj
+
+    # Chauffage collectif fioul = risque fort
+    if cond.heating == "collectif_fioul":
+        fioul_adj = -3.0
+        hyp = f"Le chauffage collectif fioul entraîne une décote de {abs(fioul_adj)}%. L'interdiction des nouvelles chaudières fioul depuis 2022 impose un remplacement à terme (coût estimé 15 000 à 40 000 € par lot). Les acquéreurs intègrent ce coût dans leur offre."
+        adjustments.append({"name": "Chauffage fioul", "value": fioul_adj, "type": "pct", "detail": "Chaudière collective fioul : risque majeur", "hypothesis": hyp})
+        total_pct_adjustment += fioul_adj
+
+    # Travaux votés en copro = décote
+    if bldg.ongoing_procedures and bldg.ongoing_procedures not in ("aucune", ""):
+        works_cost = getattr(bldg, 'works_cost', 0) or 0
+        if works_cost > 0:
+            hyp = f"Des travaux de type '{bldg.ongoing_procedures.replace('_', ' ')}' sont votés en copropriété. Votre quote-part est estimée à {int(works_cost):,}€. Ce montant est déduit du prix car l'acquéreur devra les financer."
+            adjustments.append({"name": "Travaux copro votés", "value": -works_cost, "type": "flat", "detail": f"{bldg.ongoing_procedures.replace('_', ' ')} : -{int(works_cost):,}€", "hypothesis": hyp})
+            total_flat_adjustment -= works_cost
+        else:
+            works_adj = -2.0
+            hyp = f"Des travaux de type '{bldg.ongoing_procedures.replace('_', ' ')}' sont prévus dans la copropriété. Sans montant précis, une décote forfaitaire de {abs(works_adj)}% est appliquée."
+            adjustments.append({"name": "Travaux copro", "value": works_adj, "type": "pct", "detail": f"{bldg.ongoing_procedures.replace('_', ' ')}", "hypothesis": hyp})
+            total_pct_adjustment += works_adj
+
+    # Parking — différencier box vs place
     if chars.parking != "aucun":
         parking_val = {"central": config.parking_central, "intermediate": config.parking_intermediate, "peripheral": config.parking_peripheral}
         p_adj = parking_val.get(zone, config.parking_peripheral)
-        hyp = f"Une place de stationnement en zone {zone} vaut environ {int(p_adj):,}€. Dans les zones centrales, la rareté des places pousse les prix jusqu'à 50 000€. Un parking sécurise aussi le financement bancaire et facilite la revente. Le type '{chars.parking}' est intégré comme un montant forfaitaire ajouté au prix."
-        adjustments.append({"name": "Parking", "value": p_adj, "type": "flat", "detail": f"Place de stationnement ({zone})", "hypothesis": hyp})
-        total_flat_adjustment += p_adj
+        if chars.parking == "box":
+            p_adj = round(p_adj * 1.3)  # Box = +30% vs place ouverte
+            hyp = f"Un box fermé en zone {zone} vaut environ {int(p_adj):,}€ (+30% vs place ouverte). Le box offre sécurité, stockage et protection du véhicule."
+        else:
+            hyp = f"Une place de stationnement en zone {zone} vaut environ {int(p_adj):,}€."
+        # Check if parking is included or separate
+        parking_included = True
+        try:
+            parking_included = chars.parking_included if hasattr(chars, 'parking_included') else True
+            if parking_included is None:
+                parking_included = True
+        except:
+            parking_included = True
+        if parking_included:
+            adjustments.append({"name": "Parking", "value": p_adj, "type": "flat", "detail": f"{chars.parking.replace('_', ' ')} ({zone}) — inclus dans le prix", "hypothesis": hyp})
+            total_flat_adjustment += p_adj
+        else:
+            adjustments.append({"name": "Parking (en sus)", "value": 0, "type": "flat", "detail": f"{chars.parking.replace('_', ' ')} ({zone}) — non inclus dans le prix estimé", "hypothesis": f"Le parking est vendu séparément. Sa valeur estimée est de {int(p_adj):,}€ mais il n'est pas inclus dans l'estimation du bien."})
 
     # Sold occupied
     if legal.current_rent > 0 and legal.remaining_lease_months > 0:
         adj = config.sold_occupied_discount
-        hyp = f"Le bien est vendu occupé avec un bail de {legal.remaining_lease_months} mois restants et un loyer de {int(legal.current_rent)}€/mois. La décote de {abs(adj)}% reflète l'impossibilité d'occupation immédiate, le risque locatif, et le coût d'opportunité. Plus le bail est long, plus la décote est importante. Un viager ou un bail commercial peut entraîner des décotes de 20 à 40%."
+        hyp = f"Le bien est vendu occupé avec un bail de {legal.remaining_lease_months} mois restants et un loyer de {int(legal.current_rent)}€/mois. La décote de {abs(adj)}% reflète l'impossibilité d'occupation immédiate et le risque locatif."
         adjustments.append({"name": "Vendu occupé", "value": adj, "type": "pct", "detail": f"Bail en cours ({legal.remaining_lease_months} mois restants)", "hypothesis": hyp})
         total_pct_adjustment += adj
 
@@ -2153,8 +2258,7 @@ ANALYSE DE PRIX — Réponds en JSON UNIQUEMENT:
 
 @api_router.post("/listing/analyze")
 async def analyze_listing(file: UploadFile = File(...)):
-    """Analyze a real estate agency listing sheet using AI"""
-    from emergentintegrations.llm.chat import LlmChat, UserMessage, FileContentWithMimeType
+    """Analyze a real estate listing from PDF/image — regex-based extraction (no LLM)"""
     import tempfile, json as json_mod
 
     ext = file.filename.split(".")[-1].lower() if "." in file.filename else "bin"
@@ -2162,172 +2266,330 @@ async def analyze_listing(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="Format supporté : PDF, JPG, PNG")
 
     file_data = await file.read()
-    if len(file_data) > 20 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="Fichier trop volumineux (max 20Mo)")
+    if len(file_data) > 15 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Fichier trop volumineux (max 15Mo)")
 
-    # Save to temp file for Gemini
-    mime_map = {"pdf": "application/pdf", "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp"}
-    mime = mime_map.get(ext, "application/octet-stream")
+    # Extract text from PDF
+    text = ""
+    if ext == "pdf":
+        try:
+            try:
+                import pymupdf as fitz
+            except ImportError:
+                try:
+                    import fitz
+                except ImportError:
+                    fitz = None
+            if fitz:
+                doc = fitz.open(stream=file_data, filetype="pdf")
+                for page in doc:
+                    text += page.get_text() + "\n"
+                doc.close()
+        except Exception as e:
+            logger.warning(f"PDF extraction failed: {e}")
 
-    with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as tmp:
-        tmp.write(file_data)
-        tmp_path = tmp.name
+    if not text:
+        raise HTTPException(status_code=422, detail="Impossible d'extraire le texte. Vérifiez que le PDF n'est pas un scan image.")
+
+    text_lower = text.lower()
+
+    # ── Regex extraction ──
+    ext_data = {}
+
+    # Price
+    price_patterns = [
+        r'(\d[\d\s]{2,8})\s*€(?!\s*/\s*m)',  # 450 000 € but not €/m²
+        r'prix\s*[:\s]*(\d[\d\s]{2,8})\s*€',
+    ]
+    for pat in price_patterns:
+        m = re.search(pat, text)
+        if m:
+            val = int(m.group(1).replace(" ", "").replace("\u202f", ""))
+            if 50000 < val < 20000000:
+                ext_data["asking_price"] = val
+                break
+
+    # Surface
+    surf_patterns = [
+        r'(\d{2,4}(?:[.,]\d{1,2})?)\s*m[²2]?\s*(?:carrez|loi carrez)',
+        r'surface\s*[:\s]*(\d{2,4}(?:[.,]\d{1,2})?)\s*m',
+        r'(\d{2,4}(?:[.,]\d{1,2})?)\s*m[²2]',
+    ]
+    for pat in surf_patterns:
+        m = re.search(pat, text_lower)
+        if m:
+            val = float(m.group(1).replace(",", "."))
+            if 8 < val < 1000:
+                ext_data["surface_carrez"] = val
+                break
+
+    # Rooms
+    rooms_m = re.search(r'(\d)\s*pi[eè]ce', text_lower)
+    if rooms_m:
+        ext_data["rooms"] = int(rooms_m.group(1))
+
+    # Bedrooms
+    bed_m = re.search(r'(\d)\s*chambre', text_lower)
+    if bed_m:
+        ext_data["bedrooms"] = int(bed_m.group(1))
+
+    # Floor
+    floor_m = re.search(r'(?:étage|etage)\s*[:\s]*(\d{1,2})', text_lower)
+    if not floor_m:
+        floor_m = re.search(r'(\d{1,2})(?:e|er|ème|eme)\s*étage', text_lower)
+    if floor_m:
+        ext_data["floor"] = int(floor_m.group(1))
+
+    # DPE
+    dpe_m = re.search(r'(?:dpe|classe\s*[ée]nerg)\s*[:\s]*([A-Ga-g])', text)
+    if dpe_m:
+        ext_data["dpe"] = dpe_m.group(1).upper()
+
+    # GES
+    ges_m = re.search(r'(?:ges|gaz\s*à\s*effet)\s*[:\s]*([A-Ga-g])', text)
+    if ges_m:
+        ext_data["ges"] = ges_m.group(1).upper()
+
+    # Address / postal code
+    postal_m = re.search(r'(75\d{3}|92\d{3}|93\d{3}|94\d{3})', text)
+    if postal_m:
+        ext_data["postal_code"] = postal_m.group(1)
+
+    addr_m = re.search(r'(\d{1,4}\s+(?:rue|avenue|boulevard|place|impasse|passage|allée|square|quai)\s+[A-ZÀ-Ÿa-zà-ÿ\s\-\']+)', text, re.IGNORECASE)
+    if addr_m:
+        ext_data["address"] = addr_m.group(1).strip()[:100]
+
+    # Elevator
+    if "ascenseur" in text_lower:
+        ext_data["elevator"] = "avec ascenseur" in text_lower or "ascenseur : oui" in text_lower
+
+    # Parking
+    if "parking" in text_lower or "box" in text_lower or "garage" in text_lower:
+        ext_data["parking"] = True
+
+    # Balcony/Terrace
+    balc_m = re.search(r'(?:balcon|terrasse)\s*[:\s]*(\d{1,3}(?:[.,]\d{1,2})?)\s*m', text_lower)
+    if balc_m:
+        ext_data["exterior_surface"] = float(balc_m.group(1).replace(",", "."))
+
+    if not ext_data.get("asking_price") and not ext_data.get("surface_carrez"):
+        raise HTTPException(status_code=422, detail="Impossible d'extraire les données du document. Vérifiez le format.")
+
+    # ── DVF analysis ──
+    asking_price = ext_data.get("asking_price", 0)
+    surface = ext_data.get("surface_carrez", 50)
+    price_sqm = round(asking_price / max(surface, 1)) if asking_price else 0
+    postal = ext_data.get("postal_code", "75016")
+    arr_avg = ARRONDISSEMENT_AVG_PRICES.get(postal, 10000)
+
+    address_text = ext_data.get("address", "")
+    geo_query = address_text
+    if postal and not any(kw in address_text.lower() for kw in ["paris", "neuilly", "boulogne"]):
+        geo_query = f"{address_text} {postal}" if address_text else postal
+
+    geo = await geocode_address(geo_query) if geo_query else None
+    local_median = arr_avg
+    search_radius = 0
+    local_comparables = []
+    local_excluded = []
+    local_circle_stats = {}
+
+    if geo:
+        local_comparables, local_excluded, search_radius, local_circle_stats, sc, scd = await fetch_dvf_progressive(
+            geo["latitude"], geo["longitude"],
+            target_surface=surface, postal_code=postal, min_comps=8,
+        )
+        if local_comparables:
+            local_median = weighted_median_price(local_comparables)
+            if geo.get("postal_code"):
+                postal = geo["postal_code"]
+
+    # Build verdict
+    diff_pct = round((price_sqm - local_median) / local_median * 100, 1) if local_median > 0 and price_sqm > 0 else 0
+    if diff_pct > 15:
+        verdict = "SURÉVALUÉ"
+        verdict_detail = f"Le prix demandé ({price_sqm}€/m²) est {diff_pct}% au-dessus de la médiane locale ({local_median}€/m²). Marge de négociation importante."
+    elif diff_pct > 5:
+        verdict = "LÉGÈREMENT CHER"
+        verdict_detail = f"Le prix demandé est {diff_pct}% au-dessus du marché local. Négociation possible de 5-10%."
+    elif diff_pct > -5:
+        verdict = "PRIX MARCHÉ"
+        verdict_detail = f"Le prix demandé est cohérent avec le marché local ({diff_pct:+.1f}% vs médiane)."
+    elif diff_pct > -15:
+        verdict = "BONNE AFFAIRE"
+        verdict_detail = f"Le prix demandé est {abs(diff_pct)}% en dessous du marché. Opportunité à saisir."
+    else:
+        verdict = "TRÈS EN DESSOUS"
+        verdict_detail = f"Prix {abs(diff_pct)}% sous le marché. Vérifiez les raisons (travaux, occupation, vices)."
+
+    analysis = {
+        "verdict": verdict,
+        "verdict_detail": verdict_detail,
+        "asking_price_sqm": price_sqm,
+        "local_median_sqm": round(local_median),
+        "diff_pct": diff_pct,
+        "negotiation_margin": "5-8%" if diff_pct > 0 else "2-3%",
+    }
+
+    def _clean(c):
+        return {k: v for k, v in c.items() if not k.startswith("_")}
+
+    analysis_id = str(uuid.uuid4())
+    result_data = {
+        "status": "success",
+        "analysis_id": analysis_id,
+        "extracted": ext_data,
+        "summary": f"{ext_data.get('rooms', '?')} pièces, {surface}m², {ext_data.get('address', postal)} — {fmt_price(asking_price) if asking_price else 'prix non trouvé'}",
+        "analysis": analysis,
+        "market_reference": {
+            "arrondissement_avg_sqm": arr_avg,
+            "local_dvf_median_sqm": round(local_median),
+            "search_radius_m": search_radius,
+            "num_comparables": len(local_comparables),
+            "postal_code": postal,
+            "zone_label": _zone_display_label(postal),
+        },
+        "comparables": [_clean(c) for c in local_comparables[:15]],
+    }
+
+    save_doc = {**result_data, "created_at": datetime.now(timezone.utc).isoformat()}
+    await db.listing_analyses.insert_one(save_doc)
+    save_doc.pop("_id", None)
+    return result_data
+
+
+@api_router.post("/listing/analyze-url")
+async def analyze_listing_url(url: str = Query(...)):
+    """Analyze a listing from its URL (SeLoger, BienIci, LeBonCoin)"""
+    import json as json_mod
+
+    ext_data = {}
 
     try:
-        api_key = os.environ.get("EMERGENT_LLM_KEY")
-        if not api_key:
-            raise HTTPException(status_code=500, detail="LLM key not configured")
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+            resp = await client.get(url, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml",
+                "Accept-Language": "fr-FR,fr;q=0.9",
+            })
+            if resp.status_code != 200:
+                raise HTTPException(status_code=422, detail=f"Impossible d'accéder à l'URL (status {resp.status_code})")
 
-        # Step 1: Extract data from the listing
-        chat = LlmChat(
-            api_key=api_key,
-            session_id=f"listing-{uuid.uuid4()}",
-            system_message="Tu es un expert immobilier région parisienne (Paris + petite couronne). Tu extrais des données structurées de fiches d'agences immobilières. Réponds UNIQUEMENT en JSON valide."
-        ).with_model("gemini", "gemini-2.5-flash")
+            html = resp.text
 
-        file_attachment = FileContentWithMimeType(file_path=tmp_path, mime_type=mime)
-        extraction_msg = UserMessage(text=EXTRACTION_PROMPT, file_contents=[file_attachment])
-        extraction_response = await chat.send_message(extraction_msg)
+            # Try JSON-LD extraction first
+            ld_matches = re.findall(r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>', html, re.DOTALL)
+            for ld in ld_matches:
+                try:
+                    data = json_mod.loads(ld)
+                    if isinstance(data, list):
+                        data = data[0]
+                    if data.get("@type") in ["Product", "RealEstateListing", "Apartment", "House", "Offer"]:
+                        if data.get("price") or data.get("offers", {}).get("price"):
+                            ext_data["asking_price"] = int(float(data.get("price") or data.get("offers", {}).get("price", 0)))
+                        if data.get("floorSize", {}).get("value"):
+                            ext_data["surface_carrez"] = float(data["floorSize"]["value"])
+                        if data.get("numberOfRooms"):
+                            ext_data["rooms"] = int(data["numberOfRooms"])
+                        if data.get("address"):
+                            addr = data["address"]
+                            if isinstance(addr, dict):
+                                ext_data["address"] = addr.get("streetAddress", "")
+                                ext_data["postal_code"] = addr.get("postalCode", "")
+                            elif isinstance(addr, str):
+                                ext_data["address"] = addr
+                except (json_mod.JSONDecodeError, TypeError, ValueError):
+                    continue
 
-        # Parse JSON from response
-        raw = extraction_response.strip()
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
-            raw = raw.rsplit("```", 1)[0]
-        extracted = json_mod.loads(raw)
-        ext_data = extracted.get("extracted", extracted)
-        summary = extracted.get("summary", "")
+            # Fallback: regex on HTML
+            if not ext_data.get("asking_price"):
+                for pat in [r'"price"\s*:\s*(\d+)', r'prix\s*:\s*(\d[\d\s]*)\s*€', r'(\d[\d\s]{4,8})\s*€']:
+                    m = re.search(pat, html)
+                    if m:
+                        val = int(m.group(1).replace(" ", ""))
+                        if 50000 < val < 20000000:
+                            ext_data["asking_price"] = val
+                            break
 
-        # Step 2: Price analysis — use LOCAL DVF data, not arrondissement average
-        asking_price = ext_data.get("asking_price", 0) or 0
-        surface = ext_data.get("surface_carrez", 0) or ext_data.get("surface_habitable", 0) or 50
-        price_sqm = round(asking_price / max(surface, 1)) if asking_price else 0
-        postal = ext_data.get("postal_code", "75001")
-        arr_avg = ZONE_AVG_PRICES.get(postal, 8000)
+            if not ext_data.get("surface_carrez"):
+                for pat in [r'"livingArea"\s*:\s*([\d.]+)', r'(\d{2,4})\s*m[²2]']:
+                    m = re.search(pat, html)
+                    if m:
+                        val = float(m.group(1))
+                        if 8 < val < 1000:
+                            ext_data["surface_carrez"] = val
+                            break
 
-        # Geocode the address to get lat/lon for DVF local search
-        address_text = ext_data.get("address") or ""
-        if not address_text and ext_data.get("neighborhood"):
-            address_text = f"{ext_data['neighborhood']} {postal}"
-        elif not address_text:
-            address_text = f"{postal}"
+            if not ext_data.get("rooms"):
+                m = re.search(r'"numberOfRooms"\s*:\s*(\d+)', html)
+                if m:
+                    ext_data["rooms"] = int(m.group(1))
 
-        # Only append city context if no city/postal hint detected
-        geo_query = address_text
-        if not any(kw in address_text.lower() for kw in ["paris", "neuilly", "boulogne", "clichy",
-            "levallois", "issy", "montrouge", "vincennes", "montreuil", "saint-"]):
-            if _is_paris_intramuros(postal):
-                geo_query = address_text + " Paris"
-            else:
-                geo_query = address_text  # BAN API handles postal codes well
+            if not ext_data.get("postal_code"):
+                m = re.search(r'"postalCode"\s*:\s*"(\d{5})"', html)
+                if m:
+                    ext_data["postal_code"] = m.group(1)
 
-        geo = await geocode_address(geo_query)
-        local_median = arr_avg
-        search_radius = 0
-        local_comparables = []
-        local_excluded = []
-        local_circle_stats = {}
-        local_street_coeff = 1.0
-        local_street_coeff_detail = ""
-        micro = {"local_premium_pct": 0}
-        target_street_name = ""
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=422, detail=f"Erreur réseau : {str(e)}")
 
-        if geo:
-            target_street_name = _extract_street_from_user_address(geo.get("street", "") or address_text)
-            local_comparables, local_excluded, search_radius, local_circle_stats, local_street_coeff, local_street_coeff_detail = await fetch_dvf_progressive(
-                geo["latitude"], geo["longitude"],
-                target_surface=surface, postal_code=postal,
-                target_street=target_street_name, min_comps=8,
-            )
-            if local_comparables:
-                raw_median = weighted_median_price(local_comparables)
-                if local_street_coeff != 1.0 and abs(local_street_coeff - 1.0) > 0.05:
-                    local_median = round(raw_median * local_street_coeff)
-                else:
-                    local_median = raw_median
-                micro = compute_micro_score(local_comparables, arr_avg, postal_code=postal)
-                if geo.get("postal_code"):
-                    postal = geo["postal_code"]
-                    arr_avg = ARRONDISSEMENT_AVG_PRICES.get(postal, arr_avg)
+    if not ext_data.get("asking_price") and not ext_data.get("surface_carrez"):
+        raise HTTPException(status_code=422, detail="Impossible d'extraire les données de cette URL. Le site bloque peut-être l'accès.")
 
-        analysis_prompt = ANALYSIS_PROMPT_TEMPLATE.format(
-            extracted_json=json_mod.dumps(ext_data, ensure_ascii=False, indent=2),
-            asking_price=f"{asking_price:,.0f}",
-            surface=surface,
-            price_sqm=f"{price_sqm:,.0f}",
-            arr_avg=f"{arr_avg:,.0f}",
-            local_median=f"{local_median:,.0f}",
-            search_radius=search_radius,
-            num_comparables=len(local_comparables),
-            num_excluded=len(local_excluded),
-            c1_count=local_circle_stats.get("circle_1_count", 0),
-            c2_count=local_circle_stats.get("circle_2_count", 0),
-            c3_count=local_circle_stats.get("circle_3_count", 0),
-            reliability=local_circle_stats.get("reliability", "BASSE"),
-            street_coeff=f"{local_street_coeff:.2f}",
-            street_coeff_detail=local_street_coeff_detail,
-            local_premium=f"{micro.get('local_premium_pct', 0):+.1f}",
+    ext_data["source_url"] = url
+
+    # Same DVF analysis as PDF version
+    asking_price = ext_data.get("asking_price", 0)
+    surface = ext_data.get("surface_carrez", 50)
+    price_sqm = round(asking_price / max(surface, 1)) if asking_price else 0
+    postal = ext_data.get("postal_code", "75016")
+    arr_avg = ARRONDISSEMENT_AVG_PRICES.get(postal, 10000)
+
+    address_text = ext_data.get("address", postal)
+    geo = await geocode_address(address_text) if address_text else None
+    local_median = arr_avg
+    local_comparables = []
+    search_radius = 0
+
+    if geo:
+        local_comparables, _, search_radius, _, _, _ = await fetch_dvf_progressive(
+            geo["latitude"], geo["longitude"], target_surface=surface, postal_code=postal, min_comps=8,
         )
+        if local_comparables:
+            local_median = weighted_median_price(local_comparables)
 
-        chat2 = LlmChat(
-            api_key=api_key,
-            session_id=f"analysis-{uuid.uuid4()}",
-            system_message="Tu es un expert en valorisation immobilière. Réponds UNIQUEMENT en JSON valide. Sois direct, factuel et sans complaisance."
-        ).with_model("gemini", "gemini-2.5-flash")
+    diff_pct = round((price_sqm - local_median) / local_median * 100, 1) if local_median > 0 and price_sqm > 0 else 0
+    if diff_pct > 15:
+        verdict = "SURÉVALUÉ"
+    elif diff_pct > 5:
+        verdict = "LÉGÈREMENT CHER"
+    elif diff_pct > -5:
+        verdict = "PRIX MARCHÉ"
+    elif diff_pct > -15:
+        verdict = "BONNE AFFAIRE"
+    else:
+        verdict = "TRÈS EN DESSOUS"
 
-        analysis_response = await chat2.send_message(UserMessage(text=analysis_prompt))
-        raw2 = analysis_response.strip()
-        if raw2.startswith("```"):
-            raw2 = raw2.split("\n", 1)[1] if "\n" in raw2 else raw2[3:]
-            raw2 = raw2.rsplit("```", 1)[0]
-        analysis = json_mod.loads(raw2)
-
-        # Build result with DVF local data
-        def _clean(c):
-            return {k: v for k, v in c.items() if not k.startswith("_")}
-
-        analysis_id = str(uuid.uuid4())
-        result_data = {
-            "status": "success",
-            "analysis_id": analysis_id,
-            "extracted": ext_data,
-            "summary": summary,
-            "analysis": analysis,
-            "market_reference": {
-                "arrondissement_avg_sqm": arr_avg,
-                "local_dvf_median_sqm": round(local_median),
-                "search_radius_m": search_radius,
-                "num_comparables": len(local_comparables),
-                "num_excluded": len(local_excluded),
-                "postal_code": postal,
-                "zone_label": _zone_display_label(postal),
-                "is_paris": _is_paris_intramuros(postal),
-                "asking_price_sqm": price_sqm,
-                "micro_score": micro,
-                "circle_stats": local_circle_stats,
-                "street_coefficient": local_street_coeff,
-                "street_coefficient_detail": local_street_coeff_detail,
-            },
-            "comparables": [_clean(c) for c in local_comparables[:15]],
-            "excluded_comparables": [_clean(c) for c in local_excluded[:10]],
-            "cross_calibration_warning": f"Vérifiez la cohérence avec les annonces en cours sur SeLoger/LeBonCoin autour de cette adresse (prix affichés = +5 à 10% vs prix de transaction réel).",
-        }
-
-        # Save to MongoDB for PDF export
-        save_doc = {**result_data, "created_at": datetime.now(timezone.utc).isoformat()}
-        await db.listing_analyses.insert_one(save_doc)
-        save_doc.pop("_id", None)
-
-        return result_data
-
-    except json_mod.JSONDecodeError as e:
-        logger.error(f"JSON parse error: {e}\nRaw: {raw[:500] if 'raw' in dir() else 'N/A'}")
-        raise HTTPException(status_code=422, detail="L'IA n'a pas retourné un JSON valide. Réessayez.")
-    except Exception as e:
-        logger.error(f"Listing analysis error: {e}")
-        raise HTTPException(status_code=500, detail=f"Erreur d'analyse: {str(e)}")
-    finally:
-        os.unlink(tmp_path)
+    analysis_id = str(uuid.uuid4())
+    return {
+        "status": "success",
+        "analysis_id": analysis_id,
+        "extracted": ext_data,
+        "summary": f"{ext_data.get('rooms', '?')}p, {surface}m², {postal} — {fmt_price(asking_price) if asking_price else '?'}",
+        "analysis": {
+            "verdict": verdict,
+            "diff_pct": diff_pct,
+            "asking_price_sqm": price_sqm,
+            "local_median_sqm": round(local_median),
+            "negotiation_margin": "5-8%" if diff_pct > 0 else "2-3%",
+        },
+        "market_reference": {
+            "local_dvf_median_sqm": round(local_median),
+            "search_radius_m": search_radius,
+            "num_comparables": len(local_comparables),
+            "postal_code": postal,
+        },
+    }
 
 # ─── PDF Report Generation ───
 
