@@ -41,7 +41,32 @@ const DEFAULT_FORM = {
 export default function NewValuation() {
   const navigate = useNavigate();
   const [step, setStep] = useState(1);
-  const [form, setForm] = useState(DEFAULT_FORM);
+  const [form, setForm] = useState(() => {
+    // Check if we're editing an existing estimation
+    try {
+      const prefill = sessionStorage.getItem("prefill_valuation");
+      if (prefill) {
+        sessionStorage.removeItem("prefill_valuation");
+        const parsed = JSON.parse(prefill);
+        // Merge with DEFAULT_FORM to ensure all fields exist
+        return {
+          ...DEFAULT_FORM,
+          location: { ...DEFAULT_FORM.location, ...parsed.location },
+          characteristics: { ...DEFAULT_FORM.characteristics, ...parsed.characteristics },
+          condition: { ...DEFAULT_FORM.condition, ...parsed.condition },
+          building: { ...DEFAULT_FORM.building, ...parsed.building },
+          legal: { ...DEFAULT_FORM.legal, ...parsed.legal },
+          listing_url: parsed.listing_url || "",
+          asking_price: parsed.asking_price || 0,
+          castorus_manual: parsed.castorus_manual || null,
+          market_manual: { ...DEFAULT_FORM.market_manual, ...(parsed.market_manual || {}) },
+        };
+      }
+    } catch (e) {
+      console.warn("Prefill error:", e);
+    }
+    return DEFAULT_FORM;
+  });
   const [addressSuggestions, setAddressSuggestions] = useState([]);
   const [loading, setLoading] = useState(false);
   const [searchTimeout, setSearchTimeout] = useState(null);
