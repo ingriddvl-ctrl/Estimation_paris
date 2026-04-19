@@ -141,23 +141,23 @@ class AlgorithmConfig(BaseModel):
     floor_2_3_no_elevator: float = 0.0
     floor_4_5_no_elevator: float = -4.0
     floor_6_plus_no_elevator: float = -12.0
-    floor_last_with_elevator: float = 5.0
+    floor_last_with_elevator: float = 9.0
     floor_per_level_elevator: float = 0.8
     balcony_pct: float = 2.0
     terrace_pct: float = 5.0
     garden_pct: float = 8.0
-    south_traversant: float = 2.0
-    north_mono: float = -3.0
+    south_traversant: float = 5.0
+    north_mono: float = -4.0
     vis_a_vis_close: float = -5.0
     view_monument: float = 8.0
     view_rooftops: float = 3.0
     view_garden: float = 2.0
     view_wall: float = -5.0
-    dpe_ab: float = 3.0
+    dpe_ab: float = 4.0
     dpe_cd: float = 0.0
-    dpe_e: float = -4.0
-    dpe_f: float = -10.0
-    dpe_g: float = -18.0
+    dpe_e: float = -2.0
+    dpe_f: float = -4.0
+    dpe_g: float = -5.0
     parking_central: float = 40000.0
     parking_intermediate: float = 27000.0
     parking_peripheral: float = 18000.0
@@ -856,11 +856,11 @@ async def geocode_address(address_text):
         logger.warning(f"Geocode error: {e}")
     return None
 
-def compute_floor_adjustment(floor: int, elevator: bool, config: AlgorithmConfig) -> tuple:
+def compute_floor_adjustment(floor: int, elevator: bool, config: AlgorithmConfig, total_floors: int = 6) -> tuple:
     if floor == 0:
-        return config.floor_rdc, "RDC : décote standard"
+        return config.floor_rdc, "RDC : décote standard (bruit, vis-à-vis, sécurité)"
     elif floor == 1:
-        return config.floor_1st, "1er étage : légère décote"
+        return config.floor_1st, "1er étage : légère décote (bruit, vis-à-vis)"
     elif floor <= 3 and not elevator:
         return config.floor_2_3_no_elevator, "2e-3e sans ascenseur : référence"
     elif floor <= 5 and not elevator:
@@ -868,9 +868,13 @@ def compute_floor_adjustment(floor: int, elevator: bool, config: AlgorithmConfig
     elif floor >= 6 and not elevator:
         return config.floor_6_plus_no_elevator, "6e+ sans ascenseur : forte décote"
     elif elevator:
-        bonus = config.floor_last_with_elevator if floor >= 6 else config.floor_per_level_elevator * max(0, floor - 3)
-        label = f"Étage {floor} avec ascenseur : surcote"
-        return bonus, label
+        # Dernier étage = prime maximale (vue, lumière, calme)
+        is_last_floor = (floor >= total_floors) or (floor >= 6)
+        if is_last_floor:
+            return config.floor_last_with_elevator, f"Dernier étage ({floor}e) avec ascenseur : forte surcote (MeilleursAgents : +15-19% vs RDC)"
+        else:
+            bonus = config.floor_per_level_elevator * max(0, floor - 3)
+            return bonus, f"Étage {floor} avec ascenseur : surcote"
     return 0.0, "Étage standard"
 
 @api_router.post("/valuation/estimate")
@@ -1053,6 +1057,8 @@ async def estimate_valuation(req: ValuationRequest):
     total_flat_adjustment = 0.0
     arr_avg = ARRONDISSEMENT_AVG_PRICES.get(loc.postal_code, 10500)
     zone = get_arrondissement_zone(loc.postal_code)
+    is_paris = _is_paris_intramuros(loc.postal_code)
+    postal_code = loc.postal_code
 
     # Market trend correction (applied first, before other adjustments)
     if market_trend_adj < -0.5:
@@ -1072,7 +1078,7 @@ async def estimate_valuation(req: ValuationRequest):
         total_pct_adjustment += market_trend_adj
 
     # Floor
-    floor_adj, floor_label = compute_floor_adjustment(loc.floor, bldg.elevator, config)
+    floor_adj, floor_label = compute_floor_adjustment(loc.floor, bldg.elevator, config, bldg.total_floors)
     if floor_adj != 0:
         if loc.floor == 0:
             hyp = f"Le rez-de-chaussée subit une décote de {abs(floor_adj)}% car il est exposé au bruit de la rue, au manque de luminosité et aux problèmes de sécurité. Les RDC se vendent en moyenne 10 à 15% moins cher que les étages intermédiaires."
@@ -1189,22 +1195,30 @@ async def estimate_valuation(req: ValuationRequest):
         adjustments.append({"name": "Jardin privatif", "value": adj, "type": "pct", "detail": f"Jardin {chars.exterior_surface}m²", "hypothesis": hyp})
         total_pct_adjustment += adj
 
-    # DPE
+    # DPE — coefficients calibrés Paris intra-muros (marché très tendu = décotes moindres)
+    # En petite couronne, les décotes sont 50-80% plus fortes
+    is_petite_couronne = not is_paris and postal_code[:2] in ("92", "93", "94")
+    dpe_multiplier = 1.6 if is_petite_couronne else 1.0
+
     dpe_map = {"A": config.dpe_ab, "B": config.dpe_ab, "C": config.dpe_cd, "D": config.dpe_cd,
                "E": config.dpe_e, "F": config.dpe_f, "G": config.dpe_g}
     dpe_adj = dpe_map.get(cond.dpe, 0)
+    # Appliquer le multiplicateur petite couronne seulement pour les décotes (valeurs négatives)
+    if dpe_adj < 0 and is_petite_couronne:
+        dpe_adj = round(dpe_adj * dpe_multiplier, 1)
     if dpe_adj != 0:
+        zone_label_dpe = "petite couronne" if is_petite_couronne else "Paris intra-muros"
         if cond.dpe in ["A", "B"]:
-            hyp = f"Le DPE classe {cond.dpe} apporte une surcote de +{dpe_adj}%. Les biens très performants énergétiquement sont de plus en plus recherchés : charges réduites, confort thermique supérieur, et aucune contrainte réglementaire à prévoir. La loi Climat valorise ces biens vertueux."
+            hyp = f"Le DPE classe {cond.dpe} apporte une surcote de +{dpe_adj}%. Les biens performants sont de plus en plus recherchés : charges réduites, confort thermique, aucune contrainte réglementaire. À Paris, cette prime reste modérée car le marché est tendu et les acheteurs privilégient la localisation."
         elif cond.dpe == "E":
-            hyp = f"Le DPE classe E entraîne une décote de {abs(dpe_adj)}%. Bien que non encore interdit à la location, ce DPE signale des travaux de rénovation énergétique à prévoir à moyen terme. Les banques deviennent plus prudentes sur le financement de ces biens."
+            hyp = f"Le DPE classe E entraîne une décote de {abs(dpe_adj)}% en {zone_label_dpe}. Bien que non encore interdit à la location (échéance 2034), ce DPE signale des travaux à moyen terme. À Paris, cette décote est limitée car la demande reste forte."
         elif cond.dpe == "F":
-            hyp = f"Le DPE classe F entraîne une forte décote de {abs(dpe_adj)}%. Depuis la loi Climat et Résilience, les logements classés F seront interdits à la location à partir de 2028. Un acquéreur devra budgéter des travaux de rénovation énergétique (estimation : {int(chars.surface_carrez * 500)} à {int(chars.surface_carrez * 1000)}€). Les notaires constatent une décote moyenne de 8 à 15% sur ces biens."
+            hyp = f"Le DPE classe F entraîne une décote de {abs(dpe_adj)}% en {zone_label_dpe}. Interdiction de location prévue en 2028. Selon PAP et les Notaires, à Paris intra-muros la décote F est de 3-5%, en petite couronne de 5-8%. L'acquéreur devra budgéter {int(chars.surface_carrez * 500)} à {int(chars.surface_carrez * 800)}€ de travaux."
         elif cond.dpe == "G":
-            hyp = f"Le DPE classe G entraîne une décote majeure de {abs(dpe_adj)}%. Ces biens sont déjà interdits à la location depuis janvier 2025. L'acquéreur devra obligatoirement réaliser une rénovation énergétique lourde (estimation : {int(chars.surface_carrez * 800)} à {int(chars.surface_carrez * 1500)}€). Le nombre de biens G sur le marché a explosé, créant une pression à la baisse supplémentaire."
+            hyp = f"Le DPE classe G entraîne une décote de {abs(dpe_adj)}% en {zone_label_dpe}. Biens interdits à la location depuis janvier 2025. À Paris, la décote reste modérée (3-5% selon PAP) car les acheteurs achètent surtout pour habiter, pas pour louer. En petite couronne la décote est plus marquée (6-10%). Travaux estimés : {int(chars.surface_carrez * 800)} à {int(chars.surface_carrez * 1500)}€."
         else:
             hyp = f"Le DPE classe {cond.dpe} est la référence du marché. Pas de surcote ni décote significative."
-        adjustments.append({"name": "DPE", "value": dpe_adj, "type": "pct", "detail": f"DPE classe {cond.dpe}", "hypothesis": hyp})
+        adjustments.append({"name": "DPE", "value": dpe_adj, "type": "pct", "detail": f"DPE classe {cond.dpe} ({zone_label_dpe})", "hypothesis": hyp})
         total_pct_adjustment += dpe_adj
 
     # Ceiling height
