@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
-import { ArrowLeft, Calculator, Share2, MapPin, TrendingUp, Shield, BarChart3, Loader2, Lightbulb, ShoppingBag, FileText, Brain, Download, RefreshCw, Settings, Save } from "lucide-react";
+import { ArrowLeft, Calculator, Share2, MapPin, TrendingUp, Shield, BarChart3, Loader2, Lightbulb, ShoppingBag, FileText, Brain, Download, RefreshCw, Settings, Save, Pencil } from "lucide-react";
 import WaterfallChart from "@/components/WaterfallChart";
 import ComparablesMap from "@/components/ComparablesMap";
 import LocationScores from "@/components/LocationScores";
@@ -187,6 +187,12 @@ export default function Results() {
     }
   };
 
+  const handleEdit = () => {
+    if (!data?.request) return;
+    sessionStorage.setItem("prefill_valuation", JSON.stringify(data.request));
+    navigate("/new?from=edit");
+  };
+
   if (loading) return (
     <div className="min-h-screen flex items-center justify-center" data-testid="results-loading">
       <Loader2 className="w-6 h-6 animate-spin text-zinc-400" />
@@ -216,6 +222,9 @@ export default function Results() {
             <span className="font-extrabold text-lg tracking-tight text-zinc-900">Ingrid</span><span className="font-bold text-lg text-blue-600 ml-1">Immo</span>
           </Link>
           <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={handleEdit} className="rounded-none text-xs border-blue-200 text-blue-600 hover:bg-blue-50">
+              <Pencil className="w-3.5 h-3.5 mr-1.5" /> Modifier
+            </Button>
             <Button variant="outline" size="sm" onClick={handleRecalculate} disabled={recalculating} className="rounded-none text-xs">
               {recalculating ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5 mr-1.5" />}
               Relancer
