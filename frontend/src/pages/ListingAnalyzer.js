@@ -31,6 +31,8 @@ export default function ListingAnalyzer() {
   const navigate = useNavigate();
   const fileRef = useRef(null);
   const [file, setFile] = useState(null);
+  const [pastedText, setPastedText] = useState("");
+  const [inputMode, setInputMode] = useState("pdf"); // "pdf" or "text"
   const [loading, setLoading] = useState(false);
   const [pdfLoading, setPdfLoading] = useState(false);
   const [result, setResult] = useState(null);
@@ -43,11 +45,20 @@ export default function ListingAnalyzer() {
   };
 
   const handleAnalyze = async () => {
-    if (!file) return;
+    if (inputMode === "pdf" && !file) return;
+    if (inputMode === "text" && !pastedText.trim()) return;
     setLoading(true);
     setResult(null);
     try {
-      const data = await api.analyzeListing(file);
+      let data;
+      if (inputMode === "text") {
+        // Send text as a blob/file
+        const blob = new Blob([pastedText], { type: "text/plain" });
+        const textFile = new File([blob], "annonce.txt", { type: "text/plain" });
+        data = await api.analyzeListing(textFile);
+      } else {
+        data = await api.analyzeListing(file);
+      }
       setResult(data);
       toast.success("Fiche analysée avec succès !");
     } catch (err) {
@@ -112,52 +123,81 @@ export default function ListingAnalyzer() {
           Analyseur de fiches d'agence
         </h1>
         <p className="text-sm text-zinc-500 mb-8 max-w-2xl">
-          Uploadez une fiche d'agence (PDF ou image) — l'IA extrait automatiquement les caractéristiques,
-          recherche les transactions DVF proches et vous donne son avis sur le prix demandé.
+          Uploadez une fiche d'agence (PDF) ou copiez-collez le texte de l'annonce. Ingrid Immo extrait les caractéristiques, recherche les transactions DVF proches et donne son avis sur le prix.
         </p>
 
         {/* Upload zone */}
         {!result && (
           <div className="max-w-xl">
-            <div
-              className={`border-2 border-dashed p-10 text-center cursor-pointer transition-all ${
-                file ? "border-black bg-zinc-50" : "border-zinc-300 hover:border-zinc-400"
-              }`}
-              onClick={() => fileRef.current?.click()}
-              data-testid="listing-upload-zone"
-            >
-              <input
-                ref={fileRef}
-                type="file"
-                accept=".pdf,.jpg,.jpeg,.png,.webp"
-                className="hidden"
-                onChange={handleFile}
-                data-testid="listing-file-input"
-              />
-              {file ? (
-                <div>
-                  <FileText className="w-8 h-8 mx-auto mb-3 text-black" />
-                  <p className="font-heading font-bold text-base">{file.name}</p>
-                  <p className="text-xs text-zinc-400 mt-1">{(file.size / 1024).toFixed(0)} Ko — Cliquez pour changer</p>
-                </div>
-              ) : (
-                <div>
-                  <Upload className="w-8 h-8 mx-auto mb-3 text-zinc-300" />
-                  <p className="text-sm text-zinc-500">Déposez une fiche d'agence</p>
-                  <p className="text-xs text-zinc-400 mt-1">PDF, JPG, PNG — max 20 Mo</p>
-                </div>
-              )}
+            {/* Mode toggle */}
+            <div className="flex mb-4 border border-zinc-200">
+              <button
+                onClick={() => setInputMode("pdf")}
+                className={`flex-1 py-2.5 text-xs font-medium transition-colors ${inputMode === "pdf" ? "bg-blue-600 text-white" : "bg-white text-zinc-500 hover:bg-zinc-50"}`}
+              >
+                <FileText className="w-3.5 h-3.5 inline mr-1.5" /> Upload PDF
+              </button>
+              <button
+                onClick={() => setInputMode("text")}
+                className={`flex-1 py-2.5 text-xs font-medium transition-colors ${inputMode === "text" ? "bg-blue-600 text-white" : "bg-white text-zinc-500 hover:bg-zinc-50"}`}
+              >
+                <Upload className="w-3.5 h-3.5 inline mr-1.5" /> Coller le texte
+              </button>
             </div>
+
+            {inputMode === "pdf" ? (
+              <div
+                className={`border-2 border-dashed p-10 text-center cursor-pointer transition-all ${
+                  file ? "border-blue-600 bg-blue-50" : "border-zinc-300 hover:border-zinc-400"
+                }`}
+                onClick={() => fileRef.current?.click()}
+                data-testid="listing-upload-zone"
+              >
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept=".pdf,.jpg,.jpeg,.png,.webp,.txt"
+                  className="hidden"
+                  onChange={handleFile}
+                  data-testid="listing-file-input"
+                />
+                {file ? (
+                  <div>
+                    <FileText className="w-8 h-8 mx-auto mb-3 text-blue-600" />
+                    <p className="font-heading font-bold text-base">{file.name}</p>
+                    <p className="text-xs text-zinc-400 mt-1">{(file.size / 1024).toFixed(0)} Ko — Cliquez pour changer</p>
+                  </div>
+                ) : (
+                  <div>
+                    <Upload className="w-8 h-8 mx-auto mb-3 text-zinc-300" />
+                    <p className="font-heading font-bold text-base text-zinc-700">Glissez un PDF ici</p>
+                    <p className="text-xs text-zinc-400 mt-1">ou cliquez pour sélectionner — PDF, JPG, PNG</p>
+                    <p className="text-xs text-zinc-400 mt-3">Astuce : sur l'annonce, faites Ctrl+P → Enregistrer en PDF</p>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div>
+                <textarea
+                  value={pastedText}
+                  onChange={(e) => setPastedText(e.target.value)}
+                  placeholder={"Collez ici le texte complet de l'annonce (Ctrl+A puis Ctrl+C depuis le site)...\n\nExemple :\nAppartement 3 pièces 65m² — 450 000 €\n2e étage avec ascenseur\nDPE : D\n75016 Paris\n..."}
+                  className="w-full h-48 border border-zinc-300 p-4 text-sm resize-y focus:border-blue-600 focus:outline-none"
+                  data-testid="listing-text-input"
+                />
+                <p className="text-xs text-zinc-400 mt-2">{pastedText.length} caractères</p>
+              </div>
+            )}
             <Button
               onClick={handleAnalyze}
-              disabled={!file || loading}
-              className="w-full mt-4 rounded-none h-12 bg-black text-white hover:bg-zinc-800 font-heading font-medium"
+              disabled={(inputMode === "pdf" ? !file : !pastedText.trim()) || loading}
+              className="w-full mt-4 rounded-none h-12 bg-blue-600 text-white hover:bg-blue-700 font-heading font-medium"
               data-testid="analyze-listing-btn"
             >
               {loading ? (
                 <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Analyse en cours (30-60s)...</>
               ) : (
-                <>Analyser la fiche</>
+                <>Analyser {inputMode === "pdf" ? "la fiche" : "le texte"}</>
               )}
             </Button>
           </div>
