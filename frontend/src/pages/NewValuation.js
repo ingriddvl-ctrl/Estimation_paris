@@ -65,6 +65,33 @@ export default function NewValuation() {
     } catch (e) {
       console.warn("Prefill error:", e);
     }
+    // Check if we're coming from a listing analysis
+    try {
+      const listingPrefill = sessionStorage.getItem("prefill_listing");
+      if (listingPrefill) {
+        sessionStorage.removeItem("prefill_listing");
+        const ext = JSON.parse(listingPrefill);
+        const prefilled = { ...DEFAULT_FORM };
+        // Map extracted listing data to form fields
+        if (ext.address) prefilled.location = { ...prefilled.location, address: ext.address };
+        if (ext.postal_code) prefilled.location = { ...prefilled.location, postal_code: ext.postal_code };
+        if (ext.floor !== undefined) prefilled.location = { ...prefilled.location, floor: ext.floor };
+        if (ext.surface_carrez) prefilled.characteristics = { ...prefilled.characteristics, surface_carrez: ext.surface_carrez };
+        if (ext.rooms) prefilled.characteristics = { ...prefilled.characteristics, rooms: ext.rooms };
+        if (ext.bedrooms) prefilled.characteristics = { ...prefilled.characteristics, bedrooms: ext.bedrooms };
+        if (ext.parking) prefilled.characteristics = { ...prefilled.characteristics, parking: "sous_sol" };
+        if (ext.exterior_surface) {
+          prefilled.characteristics = { ...prefilled.characteristics, exterior_type: "balcon", exterior_surface: ext.exterior_surface };
+        }
+        if (ext.dpe) prefilled.condition = { ...prefilled.condition, dpe: ext.dpe };
+        if (ext.ges) prefilled.condition = { ...prefilled.condition, ges: ext.ges };
+        if (ext.elevator !== undefined) prefilled.building = { ...prefilled.building, elevator: ext.elevator };
+        if (ext.asking_price) prefilled.asking_price = ext.asking_price;
+        return prefilled;
+      }
+    } catch (e) {
+      console.warn("Listing prefill error:", e);
+    }
     return DEFAULT_FORM;
   });
   const [addressSuggestions, setAddressSuggestions] = useState([]);
