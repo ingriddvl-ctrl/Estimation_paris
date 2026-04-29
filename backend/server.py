@@ -2276,16 +2276,27 @@ async def analyze_listing(file: UploadFile = File(...)):
     import tempfile, json as json_mod
 
     ext = file.filename.split(".")[-1].lower() if "." in file.filename else "bin"
-    if ext not in ["pdf", "jpg", "jpeg", "png", "webp"]:
-        raise HTTPException(status_code=400, detail="Format supporté : PDF, JPG, PNG")
+    if ext not in ["pdf", "jpg", "jpeg", "png", "webp", "txt"]:
+        raise HTTPException(status_code=400, detail="Format supporté : PDF, JPG, PNG, TXT")
 
     file_data = await file.read()
     if len(file_data) > 15 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="Fichier trop volumineux (max 15Mo)")
 
-    # Extract text from PDF
+    # Extract text
     text = ""
+    extraction_method = "none"
+
+    # Plain text file — direct read
+    if ext == "txt":
+        try:
+            text = file_data.decode("utf-8", errors="replace")
+            extraction_method = "txt"
+            logger.info(f"Text file read: {len(text)} chars")
+        except Exception as e:
+            logger.warning(f"Text file read failed: {e}")
     if ext == "pdf":
+        # Method 1: PyMuPDF (fitz)
         try:
             try:
                 import pymupdf as fitz
@@ -2299,13 +2310,51 @@ async def analyze_listing(file: UploadFile = File(...)):
                 for page in doc:
                     text += page.get_text() + "\n"
                 doc.close()
+                if text.strip():
+                    extraction_method = "pymupdf"
+                    logger.info(f"PDF extracted with PyMuPDF: {len(text)} chars")
         except Exception as e:
-            logger.warning(f"PDF extraction failed: {e}")
+            logger.warning(f"PyMuPDF extraction failed: {e}")
 
-    if not text:
-        raise HTTPException(status_code=422, detail="Impossible d'extraire le texte. Vérifiez que le PDF n'est pas un scan image.")
+        # Method 2: pdfplumber (fallback)
+        if not text.strip():
+            try:
+                import pdfplumber
+                import io as io_mod
+                pdf_file = io_mod.BytesIO(file_data)
+                with pdfplumber.open(pdf_file) as pdf:
+                    for page in pdf.pages:
+                        page_text = page.extract_text()
+                        if page_text:
+                            text += page_text + "\n"
+                if text.strip():
+                    extraction_method = "pdfplumber"
+                    logger.info(f"PDF extracted with pdfplumber: {len(text)} chars")
+            except ImportError:
+                logger.warning("pdfplumber not installed")
+            except Exception as e:
+                logger.warning(f"pdfplumber extraction failed: {e}")
+
+        # Method 3: basic binary text extraction (last resort)
+        if not text.strip():
+            try:
+                raw_text = file_data.decode("latin-1", errors="replace")
+                # Extract readable text fragments between parentheses (PDF text objects)
+                import re as re_mod2
+                fragments = re_mod2.findall(r'\(([^\)]{2,200})\)', raw_text)
+                text = " ".join(f for f in fragments if any(c.isalpha() for c in f))
+                if text.strip():
+                    extraction_method = "binary"
+                    logger.info(f"PDF extracted with binary method: {len(text)} chars")
+            except Exception as e:
+                logger.warning(f"Binary extraction failed: {e}")
+
+    if not text.strip():
+        logger.error(f"All PDF extraction methods failed for file: {file.filename}, size: {len(file_data)} bytes")
+        raise HTTPException(status_code=422, detail=f"Impossible d'extraire le texte du PDF. Méthodes essayées : PyMuPDF, pdfplumber, binaire. Le fichier fait {len(file_data)} octets. Essayez de copier-coller le texte de l'annonce directement.")
 
     text_lower = text.lower()
+    logger.info(f"Extraction OK ({extraction_method}): {len(text)} chars, first 200: {text[:200]}")
 
     # ── Regex extraction ──
     ext_data = {}
