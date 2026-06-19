@@ -1501,7 +1501,70 @@ async def estimate_valuation(req: ValuationRequest):
 
     adjusted_price_sqm = base_price_sqm * (1 + total_pct_adjustment / 100)
     total_price_median = adjusted_price_sqm * chars.surface_carrez + total_flat_adjustment
-    
+
+    # ── Signal micro-marché ──────────────────────────────────────────────────
+    # Si la médiane DVF brute locale est significativement au-dessus de l'estimation
+    # finale, c'est que le voisinage soutient un prix plus élevé que ce que les
+    # décotes individuelles suggèrent. On applique un bonus partiel plafonné.
+    micro_market_signal = None
+    raw_median_sqm = base_price_sqm  # médiane DVF avant ajustements
+    gap_pct = ((raw_median_sqm - adjusted_price_sqm) / raw_median_sqm * 100) if raw_median_sqm > 0 else 0
+
+    if comparables and gap_pct >= 8:
+        # Le voisinage est significativement plus cher que l'estimation — signal positif
+        # On récupère une fraction du gap : 25% du gap, plafonné à +5%
+        micro_bonus_pct = min(gap_pct * 0.25, 5.0)
+        micro_bonus_pct = round(micro_bonus_pct, 1)
+        micro_bonus_flat = round(total_price_median * micro_bonus_pct / 100)
+        total_price_median += micro_bonus_flat
+        adjusted_price_sqm = total_price_median / max(chars.surface_carrez, 1)
+        micro_market_signal = {
+            "triggered": True,
+            "gap_pct": round(gap_pct, 1),
+            "bonus_pct": micro_bonus_pct,
+            "bonus_euros": micro_bonus_flat,
+            "raw_median_sqm": round(raw_median_sqm),
+            "label": "Signal micro-marché positif",
+            "interpretation": (
+                f"La médiane DVF brute du voisinage ({round(raw_median_sqm):,}€/m²) est "
+                f"{round(gap_pct, 1)}% au-dessus de l'estimation après décotes ({round(adjusted_price_sqm - micro_bonus_flat/max(chars.surface_carrez,1)):,}€/m²). "
+                f"Le micro-marché soutient un prix plus élevé que ce que les critères individuels suggèrent — "
+                f"un bonus de +{micro_bonus_pct}% ({micro_bonus_flat:,}€) est appliqué pour en tenir compte partiellement."
+            ),
+        }
+        adjustments.append({
+            "name": "Signal micro-marché",
+            "value": micro_bonus_pct,
+            "type": "pct",
+            "detail": f"Voisinage {round(gap_pct,1)}% plus cher — bonus partiel ({micro_bonus_pct}%)",
+            "hypothesis": micro_market_signal["interpretation"],
+        })
+    elif comparables and gap_pct >= 4:
+        # Gap modéré — signal mais pas de correction numérique, juste informatif
+        micro_market_signal = {
+            "triggered": False,
+            "gap_pct": round(gap_pct, 1),
+            "bonus_pct": 0,
+            "bonus_euros": 0,
+            "raw_median_sqm": round(raw_median_sqm),
+            "label": "Signal micro-marché modéré",
+            "interpretation": (
+                f"Le voisinage DVF ({round(raw_median_sqm):,}€/m²) est {round(gap_pct,1)}% au-dessus de l'estimation. "
+                f"Signal positif mais insuffisant pour déclencher un ajustement automatique (seuil : 8%). "
+                f"À surveiller : si les annonces actives confirment ce niveau, l'estimation est conservatrice."
+            ),
+        }
+    else:
+        micro_market_signal = {
+            "triggered": False,
+            "gap_pct": round(gap_pct, 1),
+            "bonus_pct": 0,
+            "bonus_euros": 0,
+            "raw_median_sqm": round(raw_median_sqm),
+            "label": "Estimation alignée avec le voisinage",
+            "interpretation": "L'estimation finale est cohérente avec la médiane DVF locale. Pas de signal micro-marché significatif.",
+        }
+
     # Spread for range
     spread = 0.08 if confidence > 60 else 0.12
     total_price_low = total_price_median * (1 - spread)
@@ -1759,6 +1822,8 @@ async def estimate_valuation(req: ValuationRequest):
     # Prix cible avant travaux
     if prix_cible_avant_travaux:
         resp["prix_cible_avant_travaux"] = prix_cible_avant_travaux
+    # Signal micro-marché
+    resp["micro_market_signal"] = micro_market_signal
     return resp
 
 # ─── Standalone Market Data Endpoint ───
@@ -3033,6 +3098,42 @@ async def generate_pdf_report(valuation_id: str):
             ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
         ]))
         story.append(adj_table)
+
+    # ── Encadré signal micro-marché ──
+    micro_signal = doc_data.get("micro_market_signal", {})
+    if micro_signal and micro_signal.get("gap_pct", 0) >= 4:
+        story.append(Spacer(1, 4*mm))
+        triggered = micro_signal.get("triggered", False)
+        gap = micro_signal.get("gap_pct", 0)
+        raw_sqm = micro_signal.get("raw_median_sqm", 0)
+        bonus_pct = micro_signal.get("bonus_pct", 0)
+        bonus_eur = micro_signal.get("bonus_euros", 0)
+        bg_color = HexColor("#EFF6FF") if triggered else HexColor("#F4F4F5")
+        border_color = PDF_BLUE if triggered else HexColor("#A1A1AA")
+        icon = "▲" if triggered else "◈"
+        title = f"{icon} Signal micro-marché {'positif — ajustement appliqué' if triggered else 'modéré — informatif'}"
+        signal_data = [
+            [title],
+            [f"Médiane DVF brute du voisinage : {raw_sqm:,}€/m²  •  Écart vs estimation : +{gap}%"],
+        ]
+        if triggered:
+            signal_data.append([f"Bonus appliqué : +{bonus_pct}% ({bonus_eur:,}€) — le voisinage soutient un prix plus élevé que les décotes individuelles."])
+        else:
+            signal_data.append(["Le signal est positif mais en-dessous du seuil d'ajustement automatique (8%). L'estimation est légèrement conservatrice."])
+
+        signal_table = Table(signal_data, colWidths=[172*mm])
+        signal_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), bg_color),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, 0), 8),
+            ("FONTSIZE", (0, 1), (-1, -1), 7.5),
+            ("TEXTCOLOR", (0, 0), (-1, 0), PDF_BLUE if triggered else PDF_GRAY),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("LEFTPADDING", (0, 0), (-1, -1), 8),
+            ("BOX", (0, 0), (-1, -1), 1, border_color),
+        ]))
+        story.append(signal_table)
 
     story.append(Spacer(1, 5*mm))
     story.append(Paragraph("Hypothèses détaillées", styles["H2"]))
