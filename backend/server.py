@@ -149,6 +149,8 @@ class AlgorithmConfig(BaseModel):
     south_traversant: float = 5.0
     north_mono: float = -4.0
     vis_a_vis_close: float = -5.0
+    view_tour_eiffel: float = 12.0
+    view_seine: float = 6.0
     view_monument: float = 8.0
     view_rooftops: float = 3.0
     view_garden: float = 2.0
@@ -1228,7 +1230,9 @@ async def estimate_valuation(req: ValuationRequest):
 
     # View
     view_hypotheses = {
-        "monument": f"La vue sur monument (Tour Eiffel, Sacré-Cœur, Seine, etc.) est le critère de surcote le plus puissant à Paris. Elle apporte +{config.view_monument}% car elle est irremplaçable et très recherchée par les acheteurs français et internationaux. Les biens avec vue iconique se vendent souvent au-dessus de la fourchette haute.",
+        "tour_eiffel": f"La vue directe sur la Tour Eiffel est le critère de surcote le plus puissant du marché parisien. Elle apporte +{config.view_tour_eiffel}% — prime internationale et irremplaçable, recherchée autant par les acheteurs français qu'étrangers. Les biens avec vue Tour Eiffel se vendent systématiquement au-dessus de la fourchette haute de leur quartier et résistent mieux aux baisses de marché.",
+        "seine": f"La vue sur la Seine apporte +{config.view_seine}%. Panorama exceptionnel et rarissime, prisé des cadres supérieurs et investisseurs étrangers. La Seine est l'un des rares critères de vue qui maintient sa prime même en bas de marché.",
+        "monument": f"La vue sur monument (Sacré-Cœur, Notre-Dame, Invalides, etc.) apporte +{config.view_monument}% car elle est irremplaçable et très recherchée. Les biens avec vue iconique se vendent souvent au-dessus de la fourchette haute.",
         "degagee": f"Une vue dégagée sur les toits de Paris apporte +{config.view_rooftops}%. L'absence de vis-à-vis, la sensation d'espace et la lumière supplémentaire sont des critères majeurs. Les acheteurs sont prêts à payer une prime significative pour cette qualité de vie.",
         "jardin": f"La vue sur jardin apporte +{config.view_garden}% grâce au calme, à la verdure et à l'absence de vis-à-vis direct. Dans Paris intra-muros où les espaces verts privatifs sont rares, c'est un atout différenciant.",
         "vis_a_vis_proche": f"Un vis-à-vis à moins de 10 mètres entraîne une décote de {abs(config.view_wall)}%. La perte d'intimité, le manque de lumière et la sensation d'enfermement réduisent significativement l'attractivité du bien. C'est l'un des défauts les plus pénalisants à Paris.",
@@ -1236,13 +1240,15 @@ async def estimate_valuation(req: ValuationRequest):
         "parc": f"La vue sur parc apporte +{config.view_garden}%. La proximité visuelle d'un espace vert est un avantage rare à Paris. Le calme, la verdure permanente et l'absence de construction future en face valorisent durablement le bien.",
     }
     view_map = {
+        "tour_eiffel": (config.view_tour_eiffel, "Vue Tour Eiffel : surcote exceptionnelle"),
+        "seine": (config.view_seine, "Vue sur la Seine : forte surcote"),
         "monument": (config.view_monument, "Vue monument : forte surcote"),
         "degagee": (config.view_rooftops, "Vue dégagée : surcote"),
         "jardin": (config.view_garden, "Vue sur jardin : surcote"),
         "vis_a_vis_proche": (config.view_wall, "Vis-à-vis proche : décote"),
         "vis_a_vis_lointain": (0.0, ""),
         "cour": (1.0, "Vue cour intérieure"),
-        "parc": (config.view_garden, "Vue sur parc : surcote")
+        "parc": (config.view_garden, "Vue sur parc : surcote"),
     }
     if chars.view in view_map and view_map[chars.view][0] != 0:
         adj, label = view_map[chars.view]
