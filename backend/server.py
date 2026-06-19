@@ -846,7 +846,9 @@ async def fetch_dvf_progressive(lat, lon, target_surface=70, postal_code="75001"
       C1 — Même rue (poids x3)
       C2 — Même type de rue dans 200m (poids x1.5)
       C3 — Rayon élargi 300-500m (poids x1)
-    Returns (included, excluded, radius, circle_stats, street_coeff, street_coeff_detail).
+    Returns (included, excluded, radius, circle_stats, street_coeff, street_coeff_detail, raw_neighborhood_median).
+    raw_neighborhood_median = médiane de TOUS les comparables valides avant filtrage type immeuble,
+    utilisée comme référence de voisinage pour le signal micro-marché.
     """
     target_street_type = _classify_street_type(target_street)
     radii = [200, 300, 500]
@@ -854,6 +856,16 @@ async def fetch_dvf_progressive(lat, lon, target_surface=70, postal_code="75001"
 
     for radius in radii:
         raw = await _fetch_dvf_raw(lat, lon, radius)
+
+        # Médiane brute du voisinage : on filtre sans biais type immeuble
+        included_neutral, _, _ = _filter_and_score_comparables(
+            raw, target_surface, postal_code,
+            target_street=target_street, target_street_type=target_street_type,
+            excluded_ids=excluded_ids, building_type="bon_etat",  # neutre = pas de biais
+        )
+        raw_neighborhood_median = weighted_median_price(included_neutral) if included_neutral else 0
+
+        # Comparables filtrés avec biais type immeuble pour le calcul final
         included, excluded, circle_stats = _filter_and_score_comparables(
             raw, target_surface, postal_code,
             target_street=target_street, target_street_type=target_street_type,
@@ -861,10 +873,10 @@ async def fetch_dvf_progressive(lat, lon, target_surface=70, postal_code="75001"
         )
         if len(included) >= min_comps:
             sc, scd = _compute_street_coefficient(included, target_street)
-            return included, excluded, radius, circle_stats, sc, scd
+            return included, excluded, radius, circle_stats, sc, scd, raw_neighborhood_median
 
     sc, scd = _compute_street_coefficient(included, target_street)
-    return included, excluded, radii[-1], circle_stats, sc, scd
+    return included, excluded, radii[-1], circle_stats, sc, scd, raw_neighborhood_median
 
 def compute_micro_score(comparables, arr_avg, postal_code=""):
     """Compute micro-location score from local DVF data"""
@@ -952,9 +964,10 @@ async def estimate_valuation(req: ValuationRequest):
     circle_stats = {}
     street_coeff = 1.0
     street_coeff_detail = ""
+    raw_neighborhood_median = 0
     target_street = _extract_street_from_user_address(loc.address or "")
     try:
-        comparables, excluded_comparables, search_radius, circle_stats, street_coeff, street_coeff_detail = await fetch_dvf_progressive(
+        comparables, excluded_comparables, search_radius, circle_stats, street_coeff, street_coeff_detail, raw_neighborhood_median = await fetch_dvf_progressive(
             loc.latitude, loc.longitude,
             target_surface=chars.surface_carrez,
             postal_code=loc.postal_code,
@@ -1503,16 +1516,14 @@ async def estimate_valuation(req: ValuationRequest):
     total_price_median = adjusted_price_sqm * chars.surface_carrez + total_flat_adjustment
 
     # ── Signal micro-marché ──────────────────────────────────────────────────
-    # Si la médiane DVF brute locale est significativement au-dessus de l'estimation
-    # finale, c'est que le voisinage soutient un prix plus élevé que ce que les
-    # décotes individuelles suggèrent. On applique un bonus partiel plafonné.
-    micro_market_signal = None
-    raw_median_sqm = base_price_sqm  # médiane DVF avant ajustements
-    gap_pct = ((raw_median_sqm - adjusted_price_sqm) / raw_median_sqm * 100) if raw_median_sqm > 0 else 0
+    # Référence : médiane brute du voisinage SANS biais type immeuble
+    # C'est ce que "le quartier" vaut réellement, indépendamment du filtre béton/pierre
+    neighborhood_ref = raw_neighborhood_median if raw_neighborhood_median > 0 else base_price_sqm
+    gap_pct = ((neighborhood_ref - adjusted_price_sqm) / neighborhood_ref * 100) if neighborhood_ref > 0 else 0
 
+    micro_market_signal = None
     if comparables and gap_pct >= 8:
         # Le voisinage est significativement plus cher que l'estimation — signal positif
-        # On récupère une fraction du gap : 25% du gap, plafonné à +5%
         micro_bonus_pct = min(gap_pct * 0.25, 5.0)
         micro_bonus_pct = round(micro_bonus_pct, 1)
         micro_bonus_flat = round(total_price_median * micro_bonus_pct / 100)
@@ -1523,35 +1534,36 @@ async def estimate_valuation(req: ValuationRequest):
             "gap_pct": round(gap_pct, 1),
             "bonus_pct": micro_bonus_pct,
             "bonus_euros": micro_bonus_flat,
-            "raw_median_sqm": round(raw_median_sqm),
+            "neighborhood_median_sqm": round(neighborhood_ref),
+            "filtered_median_sqm": round(base_price_sqm),
             "label": "Signal micro-marché positif",
             "interpretation": (
-                f"La médiane DVF brute du voisinage ({round(raw_median_sqm):,}€/m²) est "
-                f"{round(gap_pct, 1)}% au-dessus de l'estimation après décotes ({round(adjusted_price_sqm - micro_bonus_flat/max(chars.surface_carrez,1)):,}€/m²). "
-                f"Le micro-marché soutient un prix plus élevé que ce que les critères individuels suggèrent — "
-                f"un bonus de +{micro_bonus_pct}% ({micro_bonus_flat:,}€) est appliqué pour en tenir compte partiellement."
+                f"La médiane brute du voisinage ({round(neighborhood_ref):,}€/m², tous types d'immeubles confondus) "
+                f"est {round(gap_pct, 1)}% au-dessus de l'estimation après décotes ({round(adjusted_price_sqm - micro_bonus_flat/max(chars.surface_carrez,1)):,}€/m²). "
+                f"Le quartier soutient un prix plus élevé — un bonus de +{micro_bonus_pct}% ({micro_bonus_flat:,}€) "
+                f"est appliqué pour en tenir compte partiellement."
             ),
         }
         adjustments.append({
             "name": "Signal micro-marché",
             "value": micro_bonus_pct,
             "type": "pct",
-            "detail": f"Voisinage {round(gap_pct,1)}% plus cher — bonus partiel ({micro_bonus_pct}%)",
+            "detail": f"Voisinage {round(gap_pct,1)}% plus cher (tous types) — bonus partiel ({micro_bonus_pct}%)",
             "hypothesis": micro_market_signal["interpretation"],
         })
     elif comparables and gap_pct >= 4:
-        # Gap modéré — signal mais pas de correction numérique, juste informatif
         micro_market_signal = {
             "triggered": False,
             "gap_pct": round(gap_pct, 1),
             "bonus_pct": 0,
             "bonus_euros": 0,
-            "raw_median_sqm": round(raw_median_sqm),
+            "neighborhood_median_sqm": round(neighborhood_ref),
+            "filtered_median_sqm": round(base_price_sqm),
             "label": "Signal micro-marché modéré",
             "interpretation": (
-                f"Le voisinage DVF ({round(raw_median_sqm):,}€/m²) est {round(gap_pct,1)}% au-dessus de l'estimation. "
-                f"Signal positif mais insuffisant pour déclencher un ajustement automatique (seuil : 8%). "
-                f"À surveiller : si les annonces actives confirment ce niveau, l'estimation est conservatrice."
+                f"Le voisinage brut ({round(neighborhood_ref):,}€/m²) est {round(gap_pct,1)}% au-dessus de l'estimation. "
+                f"Signal positif mais sous le seuil d'ajustement automatique (8%). "
+                f"L'estimation est légèrement conservatrice."
             ),
         }
     else:
@@ -1560,9 +1572,10 @@ async def estimate_valuation(req: ValuationRequest):
             "gap_pct": round(gap_pct, 1),
             "bonus_pct": 0,
             "bonus_euros": 0,
-            "raw_median_sqm": round(raw_median_sqm),
+            "neighborhood_median_sqm": round(neighborhood_ref),
+            "filtered_median_sqm": round(base_price_sqm),
             "label": "Estimation alignée avec le voisinage",
-            "interpretation": "L'estimation finale est cohérente avec la médiane DVF locale. Pas de signal micro-marché significatif.",
+            "interpretation": "L'estimation finale est cohérente avec la médiane DVF locale.",
         }
 
     # Spread for range
@@ -3105,7 +3118,8 @@ async def generate_pdf_report(valuation_id: str):
         story.append(Spacer(1, 4*mm))
         triggered = micro_signal.get("triggered", False)
         gap = micro_signal.get("gap_pct", 0)
-        raw_sqm = micro_signal.get("raw_median_sqm", 0)
+        raw_sqm = micro_signal.get("neighborhood_median_sqm", 0)
+        filtered_sqm = micro_signal.get("filtered_median_sqm", 0)
         bonus_pct = micro_signal.get("bonus_pct", 0)
         bonus_eur = micro_signal.get("bonus_euros", 0)
         bg_color = HexColor("#EFF6FF") if triggered else HexColor("#F4F4F5")
@@ -3114,7 +3128,7 @@ async def generate_pdf_report(valuation_id: str):
         title = f"{icon} Signal micro-marché {'positif — ajustement appliqué' if triggered else 'modéré — informatif'}"
         signal_data = [
             [title],
-            [f"Médiane DVF brute du voisinage : {raw_sqm:,}€/m²  •  Écart vs estimation : +{gap}%"],
+            [f"Médiane brute voisinage (tous types) : {raw_sqm:,}€/m²  •  Médiane filtrée ({mkt.get('building_type_filter','').replace('_',' ')}) : {filtered_sqm:,}€/m²  •  Écart : +{gap}%"],
         ]
         if triggered:
             signal_data.append([f"Bonus appliqué : +{bonus_pct}% ({bonus_eur:,}€) — le voisinage soutient un prix plus élevé que les décotes individuelles."])
