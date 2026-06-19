@@ -543,8 +543,9 @@ function Step3({ form, update }) {
           <Select value={form.condition.general_state} onValueChange={(v) => update("condition", "general_state", v)}>
             <SelectTrigger className="rounded-none h-11" data-testid="state-select"><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="a_renover">À rénover entièrement</SelectItem>
-              <SelectItem value="rafraichissement">Rafraîchissement à prévoir</SelectItem>
+              <SelectItem value="a_renover">À rénover entièrement (tout à refaire)</SelectItem>
+              <SelectItem value="renovation_partielle">Rénovation partielle (cuisine / SDB)</SelectItem>
+              <SelectItem value="rafraichissement">Rafraîchissement à prévoir (peinture, sols)</SelectItem>
               <SelectItem value="bon_etat">Bon état — habitable en l'état</SelectItem>
               <SelectItem value="refait_neuf">Refait à neuf récemment</SelectItem>
               <SelectItem value="luxe">Standing luxe / architecte</SelectItem>
@@ -994,4 +995,3 @@ function Step5({ form, update }) {
     </div>
   );
 }
-
