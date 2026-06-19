@@ -1516,15 +1516,24 @@ async def estimate_valuation(req: ValuationRequest):
     total_price_median = adjusted_price_sqm * chars.surface_carrez + total_flat_adjustment
 
     # ── Signal micro-marché ──────────────────────────────────────────────────
-    # Référence : médiane brute du voisinage SANS biais type immeuble
-    # C'est ce que "le quartier" vaut réellement, indépendamment du filtre béton/pierre
+    # La médiane brute vs estimation ne suffit pas — on utilise P75 des comparables
+    # Si le haut du marché local est nettement au-dessus de l'estimation,
+    # c'est que le voisinage soutient un prix plus élevé pour un bien en bon état.
+    dispersion = circle_stats.get("dispersion", {})
+    p75_sqm = dispersion.get("p75", 0)
     neighborhood_ref = raw_neighborhood_median if raw_neighborhood_median > 0 else base_price_sqm
-    gap_pct = ((neighborhood_ref - adjusted_price_sqm) / neighborhood_ref * 100) if neighborhood_ref > 0 else 0
+    # Gap calculé entre P75 du voisinage et l'estimation finale
+    # P75 représente ce que le haut du marché local est prêt à payer
+    gap_vs_p75 = ((p75_sqm - adjusted_price_sqm) / p75_sqm * 100) if p75_sqm > 0 else 0
+    # Gap calculé entre médiane brute et estimation (signal plus conservateur)
+    gap_vs_median = ((neighborhood_ref - adjusted_price_sqm) / neighborhood_ref * 100) if neighborhood_ref > 0 else 0
+    # On déclenche sur le gap médiane (plus prudent), mais on affiche les deux
+    gap_pct = gap_vs_median
 
     micro_market_signal = None
-    if comparables and gap_pct >= 8:
-        # Le voisinage est significativement plus cher que l'estimation — signal positif
-        micro_bonus_pct = min(gap_pct * 0.25, 5.0)
+    if comparables and gap_pct >= 5:
+        # Bonus = 20% du gap médiane, plafonné à +4%
+        micro_bonus_pct = min(gap_pct * 0.20, 4.0)
         micro_bonus_pct = round(micro_bonus_pct, 1)
         micro_bonus_flat = round(total_price_median * micro_bonus_pct / 100)
         total_price_median += micro_bonus_flat
@@ -1532,47 +1541,53 @@ async def estimate_valuation(req: ValuationRequest):
         micro_market_signal = {
             "triggered": True,
             "gap_pct": round(gap_pct, 1),
+            "gap_vs_p75": round(gap_vs_p75, 1),
             "bonus_pct": micro_bonus_pct,
             "bonus_euros": micro_bonus_flat,
             "neighborhood_median_sqm": round(neighborhood_ref),
+            "p75_sqm": round(p75_sqm),
             "filtered_median_sqm": round(base_price_sqm),
             "label": "Signal micro-marché positif",
             "interpretation": (
-                f"La médiane brute du voisinage ({round(neighborhood_ref):,}€/m², tous types d'immeubles confondus) "
-                f"est {round(gap_pct, 1)}% au-dessus de l'estimation après décotes ({round(adjusted_price_sqm - micro_bonus_flat/max(chars.surface_carrez,1)):,}€/m²). "
-                f"Le quartier soutient un prix plus élevé — un bonus de +{micro_bonus_pct}% ({micro_bonus_flat:,}€) "
-                f"est appliqué pour en tenir compte partiellement."
+                f"La médiane brute du voisinage ({round(neighborhood_ref):,}€/m²) est "
+                f"{round(gap_pct, 1)}% au-dessus de l'estimation après décotes. "
+                f"Le P75 des comparables ({round(p75_sqm):,}€/m²) montre que le haut du marché local "
+                f"est {round(gap_vs_p75, 1)}% au-dessus — le quartier soutient un prix plus élevé "
+                f"pour un bien rénové. Bonus appliqué : +{micro_bonus_pct}% ({micro_bonus_flat:,}€)."
             ),
         }
         adjustments.append({
             "name": "Signal micro-marché",
             "value": micro_bonus_pct,
             "type": "pct",
-            "detail": f"Voisinage {round(gap_pct,1)}% plus cher (tous types) — bonus partiel ({micro_bonus_pct}%)",
+            "detail": f"Médiane voisinage +{round(gap_pct,1)}%, P75 à {round(p75_sqm):,}€/m² — bonus partiel ({micro_bonus_pct}%)",
             "hypothesis": micro_market_signal["interpretation"],
         })
-    elif comparables and gap_pct >= 4:
+    elif comparables and gap_pct >= 2:
         micro_market_signal = {
             "triggered": False,
             "gap_pct": round(gap_pct, 1),
+            "gap_vs_p75": round(gap_vs_p75, 1),
             "bonus_pct": 0,
             "bonus_euros": 0,
             "neighborhood_median_sqm": round(neighborhood_ref),
+            "p75_sqm": round(p75_sqm),
             "filtered_median_sqm": round(base_price_sqm),
             "label": "Signal micro-marché modéré",
             "interpretation": (
-                f"Le voisinage brut ({round(neighborhood_ref):,}€/m²) est {round(gap_pct,1)}% au-dessus de l'estimation. "
-                f"Signal positif mais sous le seuil d'ajustement automatique (8%). "
-                f"L'estimation est légèrement conservatrice."
+                f"Le voisinage ({round(neighborhood_ref):,}€/m²) est {round(gap_pct,1)}% au-dessus de l'estimation. "
+                f"Signal positif mais sous le seuil d'ajustement (5%). L'estimation est légèrement conservatrice."
             ),
         }
     else:
         micro_market_signal = {
             "triggered": False,
             "gap_pct": round(gap_pct, 1),
+            "gap_vs_p75": round(gap_vs_p75, 1),
             "bonus_pct": 0,
             "bonus_euros": 0,
             "neighborhood_median_sqm": round(neighborhood_ref),
+            "p75_sqm": round(p75_sqm),
             "filtered_median_sqm": round(base_price_sqm),
             "label": "Estimation alignée avec le voisinage",
             "interpretation": "L'estimation finale est cohérente avec la médiane DVF locale.",
@@ -3128,7 +3143,8 @@ async def generate_pdf_report(valuation_id: str):
         title = f"{icon} Signal micro-marché {'positif — ajustement appliqué' if triggered else 'modéré — informatif'}"
         signal_data = [
             [title],
-            [f"Médiane brute voisinage (tous types) : {raw_sqm:,}€/m²  •  Médiane filtrée ({mkt.get('building_type_filter','').replace('_',' ')}) : {filtered_sqm:,}€/m²  •  Écart : +{gap}%"],
+            [f"Médiane voisinage (tous types) : {raw_sqm:,}€/m²  •  P75 : {micro_signal.get('p75_sqm',0):,}€/m²  •  Médiane filtrée ({mkt.get('building_type_filter','').replace('_',' ')}) : {filtered_sqm:,}€/m²"],
+            [f"Écart médiane : +{gap}%  •  Écart P75 : +{micro_signal.get('gap_vs_p75',0)}%"],
         ]
         if triggered:
             signal_data.append([f"Bonus appliqué : +{bonus_pct}% ({bonus_eur:,}€) — le voisinage soutient un prix plus élevé que les décotes individuelles."])
