@@ -164,8 +164,16 @@ class AlgorithmConfig(BaseModel):
     ceiling_low: float = -5.0
     ceiling_standard: float = 0.0
     ceiling_high: float = 3.0
-    state_to_renovate: float = -1200.0
-    state_refresh: float = -400.0
+    # Travaux : 3 niveaux, Paris vs petite couronne
+    state_refresh_paris: float = -500.0        # rafraîchissement (peinture, sols) — Paris
+    state_refresh_suburbs: float = -400.0      # rafraîchissement — petite couronne
+    state_renovate_partial_paris: float = -900.0    # rénovation partielle (cuisine/SDB) — Paris
+    state_renovate_partial_suburbs: float = -750.0  # rénovation partielle — petite couronne
+    state_renovate_full_paris: float = -1600.0      # tout à refaire — Paris
+    state_renovate_full_suburbs: float = -1400.0    # tout à refaire — petite couronne
+    # Alias legacy (non utilisé directement)
+    state_to_renovate: float = -1400.0
+    state_refresh: float = -450.0
     state_good: float = 0.0
     state_new: float = 5.0
     state_luxury: float = 8.0
@@ -631,9 +639,35 @@ def _assign_circle(comp, target_street, target_street_type):
         return 2, 1.5  # Rue voisine
     return 3, 1.0
 
+def _building_type_weight(building_type: str) -> float:
+    """
+    Poids de compatibilité entre le type d'immeuble cible et un comparable DVF.
+    DVF ne contient pas le type d'immeuble — on ne peut pas filtrer dur.
+    On ajuste le poids selon la cohérence probable avec le marché local.
+    Premium (pierre/haussmannien) → favorise les comparables haut de gamme.
+    Standard (béton) → pénalise légèrement les outliers hauts.
+    """
+    # Note : appliqué via dispersion, pas par comparable individuel.
+    # Retourne un multiplicateur global sur les outliers hauts/bas.
+    weights = {
+        "pierre_taille_haussmannien": {"high_bias": 1.2, "low_bias": 0.8},
+        "pierre_taille": {"high_bias": 1.1, "low_bias": 0.85},
+        "pierre_taille_autre": {"high_bias": 1.05, "low_bias": 0.9},
+        "brique": {"high_bias": 1.0, "low_bias": 0.95},
+        "brique_pierre": {"high_bias": 1.0, "low_bias": 0.95},
+        "beton_standing": {"high_bias": 0.95, "low_bias": 1.0},
+        "beton_simple": {"high_bias": 0.85, "low_bias": 1.1},
+        "beton": {"high_bias": 0.85, "low_bias": 1.1},
+        "residence_securisee": {"high_bias": 1.0, "low_bias": 0.9},
+        "immeuble_neuf": {"high_bias": 1.1, "low_bias": 0.9},
+        "petit_immeuble": {"high_bias": 0.9, "low_bias": 1.0},
+    }
+    return weights.get(building_type, {"high_bias": 1.0, "low_bias": 1.0})
+
+
 def _filter_and_score_comparables(raw_comps, target_surface, postal_code,
                                    target_street="", target_street_type="B",
-                                   excluded_ids=None):
+                                   excluded_ids=None, building_type="beton_simple"):
     """NETTOYAGE + CERCLES CONCENTRIQUES + SCORING. Returns (included, excluded, circle_stats)."""
     excluded_ids = set(excluded_ids or [])
     is_premium = postal_code in PREMIUM_ARRONDISSEMENTS
@@ -685,16 +719,18 @@ def _filter_and_score_comparables(raw_comps, target_surface, postal_code,
         prices = [c["price_per_sqm"] for c in included]
         mean_p = sum(prices) / len(prices)
         std_p = (sum((p - mean_p)**2 for p in prices) / len(prices)) ** 0.5
-        # Also use IQR for more robust filtering
         sorted_prices = sorted(prices)
         q1_idx = len(sorted_prices) // 4
         q3_idx = 3 * len(sorted_prices) // 4
         q1 = sorted_prices[q1_idx]
         q3 = sorted_prices[q3_idx]
         iqr = q3 - q1
-        iqr_lower = q1 - 1.5 * iqr
-        iqr_upper = q3 + 1.5 * iqr
-        # Use the tighter of the two methods
+        # Ajustement des bornes selon type d'immeuble :
+        # Béton simple → on serre la borne haute (évite pollution par comparables haussmanniens)
+        # Pierre/haussmannien → on serre la borne basse (évite pollution par béton social)
+        btype_w = _building_type_weight(building_type)
+        iqr_lower = q1 - 1.5 * iqr * btype_w["low_bias"]
+        iqr_upper = q3 + 1.5 * iqr * btype_w["high_bias"]
         if std_p > 0:
             std_lower, std_upper = mean_p - 1.5 * std_p, mean_p + 1.5 * std_p
             lower = max(iqr_lower, std_lower)
@@ -717,8 +753,29 @@ def _filter_and_score_comparables(raw_comps, target_surface, postal_code,
     c2 = len([c for c in included if c.get("circle") == 2])
     c3 = len([c for c in included if c.get("circle") == 3])
     reliability = "HAUTE" if c1 >= 8 else ("MOYENNE" if c1 + c2 >= 5 else "BASSE")
-    circle_stats = {"circle_1_count": c1, "circle_2_count": c2, "circle_3_count": c3,
-                    "reliability": reliability, "target_street": target_street, "target_street_type": target_street_type}
+
+    # Dispersion des prix/m²
+    all_prices = sorted([c["price_per_sqm"] for c in included])
+    if len(all_prices) >= 4:
+        p25 = all_prices[len(all_prices) // 4]
+        p75 = all_prices[3 * len(all_prices) // 4]
+        median_p = all_prices[len(all_prices) // 2]
+        cv = (p75 - p25) / median_p if median_p > 0 else 0
+        heterogeneity_flag = cv > 0.18  # >18% d'écart interquartile relatif = marché hétérogène
+    else:
+        p25 = p75 = median_p = 0
+        cv = 0
+        heterogeneity_flag = False
+
+    circle_stats = {
+        "circle_1_count": c1, "circle_2_count": c2, "circle_3_count": c3,
+        "reliability": reliability, "target_street": target_street, "target_street_type": target_street_type,
+        "dispersion": {
+            "p25": round(p25), "median": round(median_p), "p75": round(p75),
+            "cv_pct": round(cv * 100, 1), "heterogeneous": heterogeneity_flag,
+        },
+        "building_type_filter": building_type,
+    }
     return included, excluded, circle_stats
 
 def _compute_street_coefficient(included, target_street):
@@ -782,7 +839,8 @@ async def _fetch_dvf_raw(lat, lon, radius):
 
 
 async def fetch_dvf_progressive(lat, lon, target_surface=70, postal_code="75001",
-                                 target_street="", min_comps=8, excluded_ids=None):
+                                 target_street="", min_comps=8, excluded_ids=None,
+                                 building_type="beton_simple"):
     """
     HIÉRARCHIE DES CERCLES CONCENTRIQUES:
       C1 — Même rue (poids x3)
@@ -799,7 +857,7 @@ async def fetch_dvf_progressive(lat, lon, target_surface=70, postal_code="75001"
         included, excluded, circle_stats = _filter_and_score_comparables(
             raw, target_surface, postal_code,
             target_street=target_street, target_street_type=target_street_type,
-            excluded_ids=excluded_ids,
+            excluded_ids=excluded_ids, building_type=building_type,
         )
         if len(included) >= min_comps:
             sc, scd = _compute_street_coefficient(included, target_street)
@@ -902,6 +960,7 @@ async def estimate_valuation(req: ValuationRequest):
             postal_code=loc.postal_code,
             target_street=target_street,
             min_comps=8,
+            building_type=bldg.building_type,
         )
     except Exception as e:
         logger.warning(f"DVF progressive search error: {e}")
@@ -1233,31 +1292,63 @@ async def estimate_valuation(req: ValuationRequest):
         adjustments.append({"name": "Hauteur sous plafond", "value": ceil_adj, "type": "pct", "detail": f"HSP {chars.ceiling_height}m", "hypothesis": hyp})
         total_pct_adjustment += ceil_adj
 
-    # General state
-    state_map = {
-        "a_renover": (config.state_to_renovate, "flat", "À rénover : coût travaux estimé"),
-        "rafraichissement": (config.state_refresh, "flat", "Rafraîchissement à prévoir"),
-        "bon_etat": (config.state_good, "pct", "Bon état : référence"),
-        "refait_neuf": (config.state_new, "pct", "Refait à neuf : surcote"),
-        "luxe": (config.state_luxury, "pct", "Standing luxe : forte surcote")
-    }
-    if cond.general_state in state_map:
-        val, adj_type, label = state_map[cond.general_state]
-        if val != 0:
-            if adj_type == "flat":
-                cost_total = abs(val) * chars.surface_carrez
-                hyp = f"Le bien nécessite {'une rénovation complète' if cond.general_state == 'a_renover' else 'un rafraîchissement'} estimé à {abs(val)}€/m², soit environ {int(cost_total):,}€ au total. Cette décote reflète le coût réel des travaux que l'acquéreur devra engager (électricité, plomberie, sols, cuisine, salle de bain). Le budget travaux doit être intégré dans le plan de financement."
-                adjustments.append({"name": "État général", "value": val, "type": "flat_per_sqm", "detail": label, "hypothesis": hyp})
-                total_flat_adjustment += val * chars.surface_carrez
-            else:
-                if cond.general_state == "refait_neuf":
-                    hyp = f"Un bien refait à neuf bénéficie d'une surcote de +{val}%. L'acquéreur n'aura aucun travaux à prévoir et peut emménager immédiatement. Les finitions récentes (cuisine, salle de bain, électricité) réduisent aussi les frais d'entretien sur 10-15 ans."
-                elif cond.general_state == "luxe":
-                    hyp = f"Un standing luxe (matériaux haut de gamme, domotique, cuisine sur mesure) apporte +{val}%. Ce niveau de finition cible une clientèle premium prête à payer un surcoût significatif pour un bien clé-en-main exceptionnel."
-                else:
-                    hyp = "Bon état général, considéré comme la référence du marché."
-                adjustments.append({"name": "État général", "value": val, "type": "pct", "detail": label, "hypothesis": hyp})
-                total_pct_adjustment += val
+    # General state — 3 niveaux de travaux distincts
+    if cond.general_state in ("a_renover", "rafraichissement", "renovation_partielle",
+                               "bon_etat", "refait_neuf", "luxe"):
+        if cond.general_state == "rafraichissement":
+            cost_sqm = config.state_refresh_paris if is_paris else config.state_refresh_suburbs
+            cost_total = abs(cost_sqm) * chars.surface_carrez
+            hyp = (f"Un rafraîchissement (peinture, sols, mise aux normes légères) est estimé à {abs(cost_sqm):.0f}€/m², "
+                   f"soit environ {int(cost_total):,}€ pour {chars.surface_carrez}m². "
+                   f"Budget typique : peinture complète (30-40€/m²), sols stratifiés/parquet (50-80€/m²), petits travaux électriques. "
+                   f"L'acquéreur peut souvent négocier 3-5% supplémentaires sur cette base.")
+            adjustments.append({"name": "État général", "value": cost_sqm, "type": "flat_per_sqm",
+                                 "detail": f"Rafraîchissement — {abs(cost_sqm):.0f}€/m² estimé", "hypothesis": hyp,
+                                 "renovation_budget": cost_total})
+            total_flat_adjustment += cost_sqm * chars.surface_carrez
+
+        elif cond.general_state == "renovation_partielle":
+            cost_sqm = config.state_renovate_partial_paris if is_paris else config.state_renovate_partial_suburbs
+            cost_total = abs(cost_sqm) * chars.surface_carrez
+            hyp = (f"Une rénovation partielle (cuisine et/ou salle de bain à refaire, électricité partielle) est estimée à "
+                   f"{abs(cost_sqm):.0f}€/m², soit environ {int(cost_total):,}€ pour {chars.surface_carrez}m². "
+                   f"Budget typique : cuisine équipée (15-25k€), salle de bain (8-15k€), plomberie partielle. "
+                   f"Ce type de travaux est planifiable après l'acquisition et permet une marge de négociation de 5-7%.")
+            adjustments.append({"name": "État général", "value": cost_sqm, "type": "flat_per_sqm",
+                                 "detail": f"Rénovation partielle — {abs(cost_sqm):.0f}€/m² estimé", "hypothesis": hyp,
+                                 "renovation_budget": cost_total})
+            total_flat_adjustment += cost_sqm * chars.surface_carrez
+
+        elif cond.general_state == "a_renover":
+            cost_sqm = config.state_renovate_full_paris if is_paris else config.state_renovate_full_suburbs
+            cost_total = abs(cost_sqm) * chars.surface_carrez
+            hyp = (f"Le bien nécessite une rénovation complète estimée à {abs(cost_sqm):.0f}€/m², "
+                   f"soit environ {int(cost_total):,}€ pour {chars.surface_carrez}m² "
+                   f"({'Paris intra-muros' if is_paris else 'petite couronne'}). "
+                   f"Comprend : électricité entière, plomberie, sols, cloisons, cuisine, salle(s) de bain, peinture. "
+                   f"Ce montant doit être intégré au plan de financement — certaines banques financent les travaux via "
+                   f"un prêt travaux complémentaire. Marge de négociation potentielle : 8-12%.")
+            adjustments.append({"name": "État général", "value": cost_sqm, "type": "flat_per_sqm",
+                                 "detail": f"Tout à refaire — {abs(cost_sqm):.0f}€/m² estimé", "hypothesis": hyp,
+                                 "renovation_budget": cost_total})
+            total_flat_adjustment += cost_sqm * chars.surface_carrez
+
+        elif cond.general_state == "bon_etat":
+            pass  # référence, pas d'ajustement
+
+        elif cond.general_state == "refait_neuf":
+            val = config.state_new
+            hyp = f"Un bien refait à neuf bénéficie d'une surcote de +{val}%. L'acquéreur n'aura aucun travaux à prévoir et peut emménager immédiatement. Les finitions récentes (cuisine, salle de bain, électricité) réduisent aussi les frais d'entretien sur 10-15 ans."
+            adjustments.append({"name": "État général", "value": val, "type": "pct",
+                                 "detail": "Refait à neuf : surcote", "hypothesis": hyp, "renovation_budget": 0})
+            total_pct_adjustment += val
+
+        elif cond.general_state == "luxe":
+            val = config.state_luxury
+            hyp = f"Un standing luxe (matériaux haut de gamme, domotique, cuisine sur mesure) apporte +{val}%. Ce niveau de finition cible une clientèle premium prête à payer un surcoût significatif pour un bien clé-en-main exceptionnel."
+            adjustments.append({"name": "État général", "value": val, "type": "pct",
+                                 "detail": "Standing luxe : forte surcote", "hypothesis": hyp, "renovation_budget": 0})
+            total_pct_adjustment += val
 
     # Building type — BEAUCOUP plus granulaire
     building_type = bldg.building_type
@@ -1582,6 +1673,32 @@ async def estimate_valuation(req: ValuationRequest):
     def _clean_comp(c):
         return {k: v for k, v in c.items() if not k.startswith("_")}
 
+    # Calcul renovation_budget total depuis les ajustements
+    renovation_budget_total = sum(
+        abs(a.get("renovation_budget", 0)) for a in adjustments
+        if a.get("renovation_budget") and a["renovation_budget"] != 0
+    )
+
+    # Prix cible avant travaux : valeur rénovée estimée − coût travaux
+    # Valeur rénovée = ce que vaudrait le bien en bon état (on retire la décote travaux)
+    prix_cible_avant_travaux = None
+    if renovation_budget_total > 0:
+        # Valeur rénovée = prix median + ce qu'on a décôté pour travaux
+        valeur_renovee = round(total_price_median + renovation_budget_total)
+        # Prix max à payer = valeur rénovée − travaux (évidemment = total_price_median)
+        # Mais on affiche aussi les scénarios de négociation sur cette base
+        prix_cible_avant_travaux = {
+            "renovation_budget": round(renovation_budget_total),
+            "valeur_renovee_estimee": valeur_renovee,
+            "prix_max_justifiable": round(total_price_median),
+            "prix_offre_cible": round(total_price_median * 0.93),  # négo 7%
+            "prix_offre_basse": round(total_price_median * 0.90),  # négo 10%
+            "note": (f"Budget travaux estimé : {round(renovation_budget_total):,}€. "
+                     f"Valeur rénovée estimée : {valeur_renovee:,}€. "
+                     f"Le vendeur price comme si le bien était en état — "
+                     f"vous pouvez argumenter jusqu'à {round(total_price_median * 0.90):,}€.")
+        }
+
     result = ValuationResult(
         request=req,
         price_low=round(total_price_low),
@@ -1623,6 +1740,8 @@ async def estimate_valuation(req: ValuationRequest):
                 "low": round(total_price_median * 0.92),
                 "note": "Prix de transaction probable après négociation (marge de 3-8% en 2026)"
             },
+            "comparables_dispersion": circle_stats.get("dispersion", {}),
+            "building_type_filter": circle_stats.get("building_type_filter", ""),
         }
     )
     resp = result.model_dump()
@@ -1637,6 +1756,9 @@ async def estimate_valuation(req: ValuationRequest):
     resp["cross_calibration_warning"] = f"Vérifiez la cohérence de l'estimation avec les annonces en cours sur SeLoger/LeBonCoin autour de {loc.address or 'cette adresse'} (prix affichés = +5 à 10% vs prix de transaction réel). La moyenne de la zone ({arr_avg}€/m² pour {zone_label}) n'est PAS une référence valide — les écarts intra-zone peuvent dépasser 50%."
     # Couche 2 — Active market data
     resp["active_market"] = active_market
+    # Prix cible avant travaux
+    if prix_cible_avant_travaux:
+        resp["prix_cible_avant_travaux"] = prix_cible_avant_travaux
     return resp
 
 # ─── Standalone Market Data Endpoint ───
@@ -2990,15 +3112,24 @@ async def generate_pdf_report(valuation_id: str):
         story.append(Paragraph("Coût total d'acquisition estimé", styles["H2"]))
         notary = round(price_median * 0.075)
         renov_map = {"A": 0, "B": 0, "C": 0, "D": 0, "E": 300, "F": 600, "G": 1000}
-        renov = round((renov_map.get(cond.get("dpe", "D"), 0)) * (chars.get("surface_carrez", 70)))
-        total = price_median + notary + renov
+        renov_dpe = round((renov_map.get(cond.get("dpe", "D"), 0)) * (chars.get("surface_carrez", 70)))
+
+        # Travaux réels depuis les ajustements
+        renov_travaux = 0
+        for adj in adjustments:
+            if adj.get("name") == "État général" and adj.get("renovation_budget", 0) > 0:
+                renov_travaux = round(adj["renovation_budget"])
+
+        total = price_median + notary + (renov_travaux if renov_travaux else renov_dpe)
         cost_data = [
             ["POSTE", "MONTANT"],
             ["Prix du bien", fmt_price(price_median)],
             ["Frais de notaire (~7.5%)", fmt_price(notary)],
         ]
-        if renov > 0:
-            cost_data.append([f"Rénovation énergétique DPE {cond.get('dpe', '?')}", fmt_price(renov)])
+        if renov_travaux > 0:
+            cost_data.append([f"Travaux estimés ({cond.get('general_state','?').replace('_',' ')})", fmt_price(renov_travaux)])
+        elif renov_dpe > 0:
+            cost_data.append([f"Rénovation énergétique DPE {cond.get('dpe', '?')}", fmt_price(renov_dpe)])
         cost_data.append(["TOTAL ACQUISITION", fmt_price(total)])
         cost_table = Table(cost_data, colWidths=[100*mm, 72*mm])
         cost_table.setStyle(TableStyle([
@@ -3015,6 +3146,70 @@ async def generate_pdf_report(valuation_id: str):
             ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
         ]))
         story.append(cost_table)
+
+        # Prix cible avant travaux
+        if renov_travaux > 0:
+            story.append(Spacer(1, 4*mm))
+            story.append(Paragraph("Prix cible avant travaux", styles["H2"]))
+            valeur_renovee = price_median + renov_travaux
+            offre_cible = round(price_median * 0.93)
+            offre_basse = round(price_median * 0.90)
+            target_data = [
+                ["SCÉNARIO", "PRIX", "LOGIQUE"],
+                ["Valeur rénovée estimée", fmt_price(valeur_renovee), "Prix du marché si bien en bon état"],
+                ["Prix max justifiable (avant travaux)", fmt_price(price_median), "Valeur rénovée − budget travaux"],
+                ["Offre cible (négo 7%)", fmt_price(offre_cible), "Marge standard marché acheteur 2026"],
+                ["Offre basse (négo 10%)", fmt_price(offre_basse), "Argument : tout à refaire + DPE"],
+            ]
+            target_table = Table(target_data, colWidths=[70*mm, 40*mm, 62*mm])
+            target_table.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), PDF_BLUE),
+                ("TEXTCOLOR", (0, 0), (-1, 0), PDF_WHITE),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, 0), 7),
+                ("FONTSIZE", (0, 1), (-1, -1), 7.5),
+                ("FONTNAME", (0, 2), (1, 2), "Helvetica-Bold"),
+                ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ("GRID", (0, 0), (-1, -1), 0.3, HexColor("#E4E4E7")),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [PDF_WHITE, PDF_LIGHT]),
+            ]))
+            story.append(target_table)
+
+        # Dispersion des comparables
+        dispersion = mkt.get("comparables_dispersion", {})
+        if dispersion and dispersion.get("p25"):
+            story.append(Spacer(1, 4*mm))
+            story.append(Paragraph("Dispersion des comparables DVF", styles["H3"]))
+            cv = dispersion.get("cv_pct", 0)
+            heterogeneous = dispersion.get("heterogeneous", False)
+            flag = " ⚠ Marché hétérogène — comparer avec prudence" if heterogeneous else " ✓ Marché homogène"
+            disp_data = [
+                ["P25 (bas de marché)", "Médiane", "P75 (haut de marché)", "Écart interquartile relatif"],
+                [
+                    f"{dispersion.get('p25', 0):,}€/m²",
+                    f"{dispersion.get('median', 0):,}€/m²",
+                    f"{dispersion.get('p75', 0):,}€/m²",
+                    f"{cv}%{flag}",
+                ],
+            ]
+            disp_table = Table(disp_data, colWidths=[42*mm, 38*mm, 42*mm, 50*mm])
+            disp_table.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), PDF_LIGHT),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, 0), 6.5),
+                ("FONTSIZE", (0, 1), (-1, -1), 8),
+                ("FONTNAME", (1, 1), (1, 1), "Helvetica-Bold"),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ("GRID", (0, 0), (-1, -1), 0.3, HexColor("#E4E4E7")),
+            ]))
+            story.append(disp_table)
+            btype = mkt.get("building_type_filter", "")
+            if btype:
+                story.append(Paragraph(f"Filtrage appliqué : type d'immeuble '{btype.replace('_', ' ')}' — les bornes outliers sont ajustées pour exclure les comparables incompatibles.", styles["Small"]))
 
     story.append(PageBreak())
 
