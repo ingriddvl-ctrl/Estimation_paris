@@ -459,13 +459,15 @@ function Step2({ form, update }) {
           <Select value={form.characteristics.view} onValueChange={(v) => update("characteristics", "view", v)}>
             <SelectTrigger className="rounded-none h-11" data-testid="view-select"><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="monument">Sur monument</SelectItem>
+              <SelectItem value="tour_eiffel">Tour Eiffel (vue directe)</SelectItem>
+              <SelectItem value="seine">Sur la Seine</SelectItem>
+              <SelectItem value="monument">Sur monument (Sacré-Cœur, etc.)</SelectItem>
               <SelectItem value="degagee">Dégagée / toits</SelectItem>
               <SelectItem value="jardin">Sur jardin</SelectItem>
               <SelectItem value="parc">Sur parc</SelectItem>
               <SelectItem value="cour">Cour intérieure</SelectItem>
-              <SelectItem value="vis_a_vis_proche">Vis-à-vis proche (&lt;10m)</SelectItem>
               <SelectItem value="vis_a_vis_lointain">Vis-à-vis lointain (&gt;10m)</SelectItem>
+              <SelectItem value="vis_a_vis_proche">Vis-à-vis proche (&lt;10m)</SelectItem>
             </SelectContent>
           </Select>
         </FieldGroup>
