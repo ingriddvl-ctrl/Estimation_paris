@@ -1324,7 +1324,7 @@ async def estimate_valuation(req: ValuationRequest):
             adjustments.append({"name": "État général", "value": cost_sqm, "type": "flat_per_sqm",
                                  "detail": f"Rafraîchissement — {abs(cost_sqm):.0f}€/m² estimé", "hypothesis": hyp,
                                  "renovation_budget": cost_total})
-            total_flat_adjustment += cost_sqm * chars.surface_carrez
+            # travaux hors price_median — affiché dans coût acquisition uniquement
 
         elif cond.general_state == "renovation_partielle":
             cost_sqm = config.state_renovate_partial_paris if is_paris else config.state_renovate_partial_suburbs
@@ -1336,7 +1336,7 @@ async def estimate_valuation(req: ValuationRequest):
             adjustments.append({"name": "État général", "value": cost_sqm, "type": "flat_per_sqm",
                                  "detail": f"Rénovation partielle — {abs(cost_sqm):.0f}€/m² estimé", "hypothesis": hyp,
                                  "renovation_budget": cost_total})
-            total_flat_adjustment += cost_sqm * chars.surface_carrez
+            # travaux hors price_median
 
         elif cond.general_state == "a_renover":
             cost_sqm = config.state_renovate_full_paris if is_paris else config.state_renovate_full_suburbs
@@ -1350,7 +1350,7 @@ async def estimate_valuation(req: ValuationRequest):
             adjustments.append({"name": "État général", "value": cost_sqm, "type": "flat_per_sqm",
                                  "detail": f"Tout à refaire — {abs(cost_sqm):.0f}€/m² estimé", "hypothesis": hyp,
                                  "renovation_budget": cost_total})
-            total_flat_adjustment += cost_sqm * chars.surface_carrez
+            # travaux hors price_median
 
         elif cond.general_state == "bon_etat":
             pass  # référence, pas d'ajustement
@@ -1519,6 +1519,8 @@ async def estimate_valuation(req: ValuationRequest):
         total_pct_adjustment = -max_cap
 
     adjusted_price_sqm = base_price_sqm * (1 + total_pct_adjustment / 100)
+    # Prix estimé = valeur du bien en l'état, parking inclus si coché
+    # Les travaux sont affichés séparément (coût d'acquisition) mais ne réduisent pas la valeur estimée
     total_price_median = adjusted_price_sqm * chars.surface_carrez + total_flat_adjustment
 
     # ── Signal micro-marché ──────────────────────────────────────────────────
@@ -1802,7 +1804,7 @@ async def estimate_valuation(req: ValuationRequest):
         price_median=round(total_price_median),
         price_high=round(total_price_high),
         price_per_sqm_low=round(total_price_low / max(chars.surface_carrez, 1)),
-        price_per_sqm_median=round(adjusted_price_sqm),
+        price_per_sqm_median=round(total_price_median / max(chars.surface_carrez, 1)),
         price_per_sqm_high=round(total_price_high / max(chars.surface_carrez, 1)),
         confidence_score=confidence,
         adjustments=adjustments,
@@ -1839,6 +1841,7 @@ async def estimate_valuation(req: ValuationRequest):
             },
             "comparables_dispersion": circle_stats.get("dispersion", {}),
             "building_type_filter": circle_stats.get("building_type_filter", ""),
+            "renovation_budget_total": renovation_budget_total,
         }
     )
     resp = result.model_dump()
@@ -3253,16 +3256,21 @@ async def generate_pdf_report(valuation_id: str):
 
         # Travaux réels depuis les ajustements
         renov_travaux = 0
+        parking_val = 0
         for adj in adjustments:
             if adj.get("name") == "État général" and adj.get("renovation_budget", 0) > 0:
                 renov_travaux = round(adj["renovation_budget"])
+            if adj.get("name") == "Parking" and adj.get("type") == "flat":
+                parking_val = round(abs(adj.get("value", 0)))
 
-        total = price_median + notary + (renov_travaux if renov_travaux else renov_dpe)
+        total = price_median + notary + (renov_travaux if renov_travaux else renov_dpe) + parking_val
         cost_data = [
             ["POSTE", "MONTANT"],
-            ["Prix du bien", fmt_price(price_median)],
+            ["Valeur du bien (avant travaux)", fmt_price(price_median)],
             ["Frais de notaire (~7.5%)", fmt_price(notary)],
         ]
+        if parking_val > 0:
+            cost_data.append(["Parking (inclus dans l'offre)", fmt_price(parking_val)])
         if renov_travaux > 0:
             cost_data.append([f"Travaux estimés ({cond.get('general_state','?').replace('_',' ')})", fmt_price(renov_travaux)])
         elif renov_dpe > 0:
@@ -3287,16 +3295,16 @@ async def generate_pdf_report(valuation_id: str):
         # Prix cible avant travaux
         if renov_travaux > 0:
             story.append(Spacer(1, 4*mm))
-            story.append(Paragraph("Prix cible avant travaux", styles["H2"]))
-            valeur_renovee = price_median + renov_travaux
+            story.append(Paragraph("Analyse de l'offre à formuler", styles["H2"]))
             offre_cible = round(price_median * 0.93)
             offre_basse = round(price_median * 0.90)
             target_data = [
                 ["SCÉNARIO", "PRIX", "LOGIQUE"],
-                ["Valeur rénovée estimée", fmt_price(valeur_renovee), "Prix du marché si bien en bon état"],
-                ["Prix max justifiable (avant travaux)", fmt_price(price_median), "Valeur rénovée − budget travaux"],
+                ["Valeur du bien (avant travaux)", fmt_price(price_median), "Estimation Ingrid Immo — marché actuel"],
                 ["Offre cible (négo 7%)", fmt_price(offre_cible), "Marge standard marché acheteur 2026"],
                 ["Offre basse (négo 10%)", fmt_price(offre_basse), "Argument : tout à refaire + DPE"],
+                ["Budget travaux à prévoir", fmt_price(renov_travaux), "En sus du prix d'achat"],
+                ["Coût total projet", fmt_price(offre_cible + renov_travaux + notary), "Offre cible + travaux + notaire"],
             ]
             target_table = Table(target_data, colWidths=[70*mm, 40*mm, 62*mm])
             target_table.setStyle(TableStyle([
