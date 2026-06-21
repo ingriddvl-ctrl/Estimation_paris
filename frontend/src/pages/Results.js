@@ -266,6 +266,13 @@ export default function Results() {
             <p className="font-heading font-bold text-3xl tracking-tight" data-testid="price-per-sqm">{formatPrice(data.price_per_sqm_median)}</p>
             <p className="text-xs text-zinc-400 mt-1 font-mono">{chars.surface_carrez} m² Carrez</p>
           </div>
+          {data.market_data?.renovation_budget_total > 0 && (
+            <div className="bg-amber-50 p-6 border-l-2 border-amber-400">
+              <p className="text-xs uppercase tracking-[0.2em] text-amber-600 font-mono mb-2">Travaux estimés</p>
+              <p className="font-heading font-bold text-3xl tracking-tight text-amber-700">{formatPrice(data.market_data.renovation_budget_total)}</p>
+              <p className="text-xs text-amber-500 mt-1 font-mono">en sus du prix d'achat</p>
+            </div>
+          )}
           <div className="bg-white p-6">
             <p className="text-xs uppercase tracking-[0.2em] text-zinc-400 font-mono mb-2">Confiance</p>
             <p className="font-heading font-bold text-3xl tracking-tight" data-testid="confidence-score">
